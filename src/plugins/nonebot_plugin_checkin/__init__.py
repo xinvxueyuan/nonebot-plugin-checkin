@@ -30,4 +30,18 @@ __plugin_meta__ = PluginMetadata(
     },
 )
 
-__all__ = ["__plugin_meta__"]
+from nonebot import get_driver
+
+from . import store
+
+
+async def _startup_init() -> None:
+    """启动时按 localstore 的数据目录建表（幂等）。"""
+    store.init(store.default_db_path())
+
+
+get_driver().on_startup(_startup_init)
+
+from . import handle  # 导入即注册三条命令
+
+__all__ = ["__plugin_meta__", "_startup_init", "handle", "store"]
