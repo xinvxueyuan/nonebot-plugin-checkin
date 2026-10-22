@@ -23,7 +23,10 @@ classifiers = [
 dependencies = [
     "nonebot2>=2.5.0",
     "nonebot-adapter-onebot>=2.4.6",
-    "nonebot-plugin-htmlrender>=0.6.7",
+    # 0.8 起改成「provider 插件」架构、去掉了 html_to_pic，且默认不装任何 provider；
+    # 本插件只用稳定的 html_to_pic API，锁在 0.6.7（自带 playwright 依赖、无需 render_backend 配置）；
+    # 0.6.8 已被 PyPI yank，故 <0.7 会解析到 0.6.7。
+    "nonebot-plugin-htmlrender>=0.6.7,<0.7",
     # 插件数据目录（库文件与头像缓存都落在它下面）
     "nonebot-plugin-localstore>=0.7.0",
     # 头像走 q1.qlogo.cn 公开地址，直接 httpx 下载（不经协议端）
@@ -58,6 +61,10 @@ nonebot-adapter-onebot = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# htmlrender 的 playwright 浏览器是进程级单例：每个用例换一个事件循环会让它
+# 在第二个用例里变成死连接（'NoneType' object has no attribute 'send'）。
+# 全量用例共用一个 session 级事件循环，与生产（单 loop）一致。
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 
 [tool.ruff]
