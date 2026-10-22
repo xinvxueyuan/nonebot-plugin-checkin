@@ -24,6 +24,8 @@ dependencies = [
     "nonebot2>=2.5.0",
     "nonebot-adapter-onebot>=2.4.6",
     "nonebot-plugin-htmlrender>=0.6.7",
+    # Windows 没有系统 tzdata，zoneinfo 需要它才能解析 Asia/Shanghai
+    "tzdata>=2024.1",
 ]
 
 [project.urls]
