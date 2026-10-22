@@ -30,6 +30,10 @@ async def test_rank_card_renders_png() -> None:
     png = await render.render_rank_card(rows)
     assert png is not None
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    # 图卡必须印昵称（只印名次就认不出人）：直接钉住 HTML 里的名字，
+    # 不靠 PNG 像素猜（像素级校验见 skill render-verification，这里守的是数据接线）。
+    html = render._rank_html(rows, title="本群签到排行")
+    assert "阿一" in html and "阿二" in html
     text = render.build_rank_fallback_text(rows)
     assert "阿一" in text and "222" in text
 
