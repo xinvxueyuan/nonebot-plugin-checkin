@@ -196,3 +196,48 @@ async def test_rank_card_uses_names_and_avatars_then_falls_back(
     await handle.do_rank(bot=bot2, event=_event())
     text = _segments(bot2)[-1].data["text"]
     assert "名字11" in text and "30 分" in text and "连续 2 天" in text
+
+
+async def test_fallback_text_accepts_design_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """渲染失败时 _send 会把整个 payload 传给 build_fallback_text。
+
+    设计系统给 payload 加了 quote / bg / avatar 三个图卡专用键，
+    build_fallback_text 必须能容忍它们，否则回退路径会抛 TypeError。
+    """
+    from nonebot_plugin_checkin import handle, render, store
+
+    store.save_checkin(
+        group_id=G,
+        user_id=11,
+        date_key="2026-10-22",
+        points=30,
+        streak=2,
+        total_points=30,
+        at=1.0,
+    )
+
+    # ① 直接断言回退函数能容忍额外键（这就是 bug 所在）
+    text = render.build_fallback_text(
+        title="签到成功",
+        nickname="某人",
+        points_gained=30,
+        total_points=30,
+        streak=2,
+        rank=1,
+        already=False,
+        quote="某签名",
+        bg=None,
+        avatar=b"PNG",
+    )
+    assert "签到成功" in text and "+30" in text
+
+    # ② 端到端：图卡渲染失败时必须真发出纯文本，而不是抛异常
+    async def dead_card(**kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(render, "render_checkin_card", dead_card)
+    bot = _bot()
+    await handle.do_checkin(bot=bot, event=_event())
+    assert _has_type(bot, "text")

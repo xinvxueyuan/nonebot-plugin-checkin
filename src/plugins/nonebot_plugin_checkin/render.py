@@ -140,8 +140,14 @@ def build_fallback_text(
     streak: int,
     rank: int | None,
     already: bool,
+    **_ignored: object,
 ) -> str:
-    """纯文本回退：信息与图卡等价（标题/本次/累计/连续/排名）。"""
+    """纯文本回退：信息与图卡等价（标题/本次/累计/连续/排名）。
+
+    `**_ignored` 是必需的：调用方 `handle._send` 用 `**payload` 透传，
+    而设计系统的 payload 还带 `quote` / `bg` / `avatar` 三个图卡专用键。
+    不接受它们会让「渲染失败 → 回退纯文本」这条路径直接抛 TypeError。
+    """
     lines = [f"{title}｜{nickname}"]
     lines.append("今天已经签过啦" if already else f"本次 +{points_gained} 分")
     lines.append(f"累计 {total_points} 分 · 连续 {streak} 天")

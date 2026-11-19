@@ -8,11 +8,13 @@ base64 后 ~77KB。Chromium 渲染 WebP data URI 已实测通过（渲染结果�
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
 import time
 from typing import TYPE_CHECKING
+import uuid
 
 import httpx
 
@@ -33,8 +35,9 @@ _RIFF_MAGIC = b"RIFF"  # WebP 容器头："RIFF" + size + "WEBP"
 # WebP 转换参数（调整体积/质量只改这里）
 _WEBP_QUALITY = 80
 _WEBP_METHOD = 4  # 4 = 速度与压缩率的平衡点
-_WEBP_MAX_EDGE = (800, 1600)  # 长边上限；卡片宽 ~560px，800 已足够
+_WEBP_MAX_EDGE = 800  # 长边上限（卡片宽 ~560px，800 已足够）
 _MIN_BG_BYTES = 2048  # 小于此值视为坏文件
+_SIGNATURE_TIMEOUT_SECONDS = 5.0  # get_stranger_info 的等待上限，防止吊死回执
 
 
 # ── 背景图 ──
@@ -62,9 +65,17 @@ def bg_is_fresh(
     return (stamp - stat.st_mtime) < ttl_minutes * 60
 
 
-async def _http_get(url: str, *, headers: dict[str, str], timeout: float) -> bytes:
-    """单点 HTTP GET；抽成独立函数便于测试替换。"""
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+async def _http_get(
+    url: str, *, headers: dict[str, str], timeout: float, follow_redirects: bool = True
+) -> bytes:
+    """单点 HTTP GET；抽成独立函数便于测试替换。
+
+    `follow_redirects=False` 用于带凭证的请求：httpx 默认会把自定义头（如 `x-api-key`）
+    原样带到重定向目标，一旦上游返回跨域 302 就把 key 泄给第三方。
+    """
+    async with httpx.AsyncClient(
+        timeout=timeout, follow_redirects=follow_redirects
+    ) as client:
         resp = await client.get(url, headers=headers)
         resp.raise_for_status()
         return resp.content
@@ -73,8 +84,12 @@ async def _http_get(url: str, *, headers: dict[str, str], timeout: float) -> byt
 async def _fetch_random_image(api_key: str, timeout: float) -> bytes | None:
     """从 xbm 随机图 API 取一张原图的字节。"""
     base = plugin_config.checkin_bg_url.rstrip("/")
+    # 带 key 的这次请求**不跟随重定向**：见 _http_get 的说明。
     raw = await _http_get(
-        base + "?count=1", headers={"x-api-key": api_key}, timeout=timeout
+        base + "?count=1",
+        headers={"x-api-key": api_key},
+        timeout=timeout,
+        follow_redirects=False,
     )
     items = json.loads(raw)
     if not items:
@@ -86,11 +101,12 @@ async def _fetch_random_image(api_key: str, timeout: float) -> bytes | None:
         local = base.split("/v1/")[0] + "/" + path
     else:
         local = image_url
+    # 取图字节这次不带凭证，可以安全跟随重定向
     return await _http_get(local, headers={}, timeout=timeout)
 
 
 def to_webp(body: bytes, *, quality: int = _WEBP_QUALITY) -> bytes | None:
-    """把任意图片字节转 WebP，长边缩到 800/1600。
+    """把任意图片字节转 WebP，**长边**统一缩到 _WEBP_MAX_EDGE。
 
     非图片字节、或 Pillow 缺 WebP 支持时返回 None（调用方降级为渐变背景）。
     """
@@ -102,10 +118,11 @@ def to_webp(body: bytes, *, quality: int = _WEBP_QUALITY) -> bytes | None:
     if not body.startswith((_JPEG_MAGIC, _PNG_MAGIC, _RIFF_MAGIC)):
         logger.warning(f"背景图既非 JPEG/PNG/WebP，前 8 字节={body[:8]!r}")
         return None
+    limit = _WEBP_MAX_EDGE  # 长边上限
     try:
         with Image.open(io.BytesIO(body)) as im:
             rgb = im.convert("RGB")
-            rgb.thumbnail(_WEBP_MAX_EDGE)
+            rgb.thumbnail((limit, limit))
             buf = io.BytesIO()
             rgb.save(buf, "WEBP", quality=quality, method=_WEBP_METHOD)
             out = buf.getvalue()
@@ -121,6 +138,7 @@ async def ensure_bg(
     """确保某人有可用 WebP 背景图；返回缓存路径，失败返回 None（调用方用渐变兜底）。
 
     命中且新鲜 → 直接返回；否则拉一张新的、转 WebP 后原子落盘，失败不写任何东西。
+    滚动超时：API 请求与取图下载共享同一个总预算，避免最坏情况等两个超时。
     """
     del url  # 保留参数位；当前来源统一走 checkin_bg_url
     key = plugin_config.checkin_bg_api_key if api_key is None else api_key
@@ -129,8 +147,11 @@ async def ensure_bg(
     if bg_is_fresh(data_dir, user_id, ttl_minutes=plugin_config.checkin_bg_ttl_minutes):
         return bg_path(data_dir, user_id)
     try:
-        raw = await _fetch_random_image(key, plugin_config.checkin_bg_timeout_seconds)
-    except Exception as exc:  # 取图失败不该影响签到
+        raw = await asyncio.wait_for(
+            _fetch_random_image(key, plugin_config.checkin_bg_timeout_seconds),
+            timeout=plugin_config.checkin_bg_timeout_seconds,
+        )
+    except (TimeoutError, Exception) as exc:  # 取图失败不该影响签到
         logger.warning(f"拉取随机背景图失败: user_id={user_id}, {exc!r}")
         return None
     if not raw:
@@ -139,14 +160,17 @@ async def ensure_bg(
     if not webp:
         return None
     dest = bg_path(data_dir, user_id)
+    tmp = dest.with_suffix(f".{uuid.uuid4().hex[:12]}.part")
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_suffix(".webp.part")
+        # 临时文件名必须唯一：同一用户并发刷新时不能共用一个 .part
         tmp.write_bytes(webp)
         tmp.replace(dest)
     except OSError as exc:
         logger.warning(f"背景图落盘失败: user_id={user_id}, {exc!r}")
         return None
+    finally:
+        tmp.unlink(missing_ok=True)  # replace 成功后是空操作；失败时清掉残留
     return dest
 
 
@@ -165,15 +189,24 @@ def _extract_long_nick(info: object) -> str | None:
 
 
 async def fetch_signature(bot: Bot | None, group_id: int, user_id: int) -> str | None:
-    """取某人的 QQ 个性签名。优先用缓存，过期再拉；任何失败返回 None。"""
+    """取某人的 QQ 个性签名。优先用缓存，过期再拉；任何失败返回 None。
+
+    三重兜底：① 缓存读失败不能挂掉回执 ② 协议端请求有超时上限
+    ③ 拿不到 / 存不进都只降级（隐藏引用区），绝不影响签到。
+    """
     ttl = plugin_config.checkin_quote_ttl_minutes
-    if store.signature_is_fresh(group_id, user_id, ttl_minutes=ttl):
-        return store.get_signature(group_id, user_id)
+    try:
+        if store.signature_is_fresh(group_id, user_id, ttl_minutes=ttl):
+            return store.get_signature(group_id, user_id)
+    except Exception as exc:  # 缓存层异常（磁盘 / 未建表）不该让回执失败
+        logger.warning(f"签名缓存读取失败: group={group_id} user={user_id}, {exc!r}")
     if bot is None:
         return None
     try:
-        info = await bot.get_stranger_info(user_id=user_id)
-    except Exception as exc:  # 协议端不支持 / 网络异常都降级
+        info = await asyncio.wait_for(
+            bot.get_stranger_info(user_id=user_id), timeout=_SIGNATURE_TIMEOUT_SECONDS
+        )
+    except Exception as exc:  # 协议端不支持 / 超时 / 网络异常都降级
         logger.warning(f"获取个性签名失败: user_id={user_id}, {exc!r}")
         return None
     text = _extract_long_nick(info)

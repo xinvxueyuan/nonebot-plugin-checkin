@@ -144,7 +144,13 @@ async def test_ensure_bg_writes_webp_not_raw(tmp_path: Path, monkeypatch) -> Non
     """落盘内容必须是 WebP，而不是原始 JPEG 字节（守住 WebP 转换这一步）。"""
     jpeg = _make_jpeg(400, 300)
 
-    async def _fake_get(url: str, *, headers: dict[str, str], timeout: float) -> bytes:
+    async def _fake_get(
+        url: str,
+        *,
+        headers: dict[str, str],
+        timeout: float,
+        follow_redirects: bool = True,
+    ) -> bytes:
         # 第一次拿列表，第二次拿图片字节
         if "count=1" in url:
             return b'[{"url":"https://xbm.example/i/abc.jpg"}]'
@@ -157,3 +163,82 @@ async def test_ensure_bg_writes_webp_not_raw(tmp_path: Path, monkeypatch) -> Non
     assert out.suffix == ".webp"
     assert data[:4] == b"RIFF" and data[8:12] == b"WEBP", "落盘的必须是 WebP 容器"
     assert len(data) < len(jpeg), "WebP 应比原图小"
+
+
+def test_to_webp_limits_portrait_long_edge() -> None:
+    """竖图（长边在 y 轴）也必须缩到 800，不能留 1600。"""
+    import io
+
+    from PIL import Image
+
+    out = assets.to_webp(_make_jpeg(600, 2400))
+    assert out is not None
+    with Image.open(io.BytesIO(out)) as im:
+        assert max(im.size) <= 800, f"长边应 <=800，实际 {im.size}"
+
+
+@pytest.mark.asyncio
+async def test_fetch_signature_survives_cache_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """签名缓存读失败不能让签到回执整条挂掉。"""
+
+    def boom(*a, **kw):
+        raise RuntimeError("disk I/O error")
+
+    monkeypatch.setattr(assets.store, "signature_is_fresh", boom)
+    assert await assets.fetch_signature(None, 1, 2) is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_signature_has_timeout(monkeypatch) -> None:
+    """协议端不回时，签名请求必须有上限，不能把回执吊死。"""
+    import asyncio
+
+    class SlowBot:
+        async def get_stranger_info(self, **kwargs):
+            await asyncio.sleep(30)  # 远超超时
+
+    monkeypatch.setattr(assets, "_SIGNATURE_TIMEOUT_SECONDS", 0.2)
+    got = await assets.fetch_signature(SlowBot(), 1, 2)  # type: ignore[arg-type]
+    assert got is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_bg_uses_unique_temp_file(tmp_path: Path) -> None:
+    """并发刷新不能共用同一个 .part 路径。"""
+    import re
+
+    seen: list[str] = []
+    orig_write = None
+
+    import pathlib
+
+    orig_write = pathlib.Path.write_bytes
+
+    def spy(self, data):
+        seen.append(str(self))
+        return orig_write(self, data)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(pathlib.Path, "write_bytes", spy)
+    try:
+
+        async def _fake_get(
+            url: str,
+            *,
+            headers: dict[str, str],
+            timeout: float,
+            follow_redirects: bool = True,
+        ) -> bytes:
+            if "count=1" in url:
+                return b'[{"url":"https://xbm.example/i/abc.jpg"}]'
+            return _make_jpeg()
+
+        monkeypatch.setattr(assets, "_http_get", _fake_get)
+        await assets.ensure_bg(tmp_path, 999, api_key="k")
+    finally:
+        monkeypatch.undo()
+    assert seen, "没有落盘"
+    # 临时文件名必须含随机后缀，不能是固定的 .webp.part
+    assert not re.search(r"\.webp\.part$", seen[0]), f"临时文件名不可复用: {seen[0]}"
