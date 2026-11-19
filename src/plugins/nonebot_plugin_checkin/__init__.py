@@ -32,11 +32,16 @@ __plugin_meta__ = PluginMetadata(
 
 from nonebot import get_driver
 
-from . import store
+from . import envbridge, store
 
 
 async def _startup_init() -> None:
-    """启动时按 localstore 的数据目录建表（幂等）。"""
+    """启动时：① 桥接 PLAYWRIGHT_BROWSERS_PATH ② 按 localstore 数据目录建表（幂等）。"""
+    # 让 .env 里配置的浏览器路径真正进 os.environ（Playwright 只认环境变量）。
+    # systemd 已设 Environment= 时本调用不会覆盖。
+    envbridge.bridge_playwright_path(
+        getattr(get_driver().config, "playwright_browsers_path", None)
+    )
     store.init(store.default_db_path())
 
 
