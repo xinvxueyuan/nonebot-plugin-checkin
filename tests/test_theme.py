@@ -15,7 +15,9 @@ def test_card_shell_without_bg_uses_gradient() -> None:
 
 
 def test_card_shell_with_bg_embeds_data_uri() -> None:
-    html = theme.card_shell(bg_data_uri="data:image/webp;base64,AAAA", body="<div>X</div>")
+    html = theme.card_shell(
+        bg_data_uri="data:image/webp;base64,AAAA", body="<div>X</div>"
+    )
     assert "data:image/webp;base64,AAAA" in html
 
 

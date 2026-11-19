@@ -202,10 +202,14 @@ def save_signature(
 
 def get_signature(group_id: int, user_id: int) -> str | None:
     """读个性签名；没有返回 None。"""
-    row = _conn().execute(
-        f"SELECT signature FROM {_T_SIGNATURES} WHERE group_id=? AND user_id=?",
-        (group_id, user_id),
-    ).fetchone()
+    row = (
+        _conn()
+        .execute(
+            f"SELECT signature FROM {_T_SIGNATURES} WHERE group_id=? AND user_id=?",
+            (group_id, user_id),
+        )
+        .fetchone()
+    )
     return row["signature"] if row else None
 
 
@@ -213,10 +217,14 @@ def signature_is_fresh(
     group_id: int, user_id: int, *, ttl_minutes: int, now: float | None = None
 ) -> bool:
     """缓存存在且未过期。`ttl_minutes == 0` 表示永不过期。"""
-    row = _conn().execute(
-        f"SELECT fetched_at FROM {_T_SIGNATURES} WHERE group_id=? AND user_id=?",
-        (group_id, user_id),
-    ).fetchone()
+    row = (
+        _conn()
+        .execute(
+            f"SELECT fetched_at FROM {_T_SIGNATURES} WHERE group_id=? AND user_id=?",
+            (group_id, user_id),
+        )
+        .fetchone()
+    )
     if row is None:
         return False
     if ttl_minutes <= 0:
