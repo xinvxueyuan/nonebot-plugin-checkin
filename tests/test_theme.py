@@ -4,14 +4,42 @@ from nonebot_plugin_checkin import theme
 def test_base_css_has_design_tokens() -> None:
     css = theme.BASE_CSS
     assert "border-radius" in css
-    for token in ["#ffffff", "#cfe8f7", "#f4f4f4", "#3c3c3c", "#8a8a8a", "italic"]:
+    for token in [
+        "rgba(255, 255, 255, 0.55)",
+        "#cfe8f7",
+        "#3c3c3c",
+        "#8a8a8a",
+        "italic",
+    ]:
         assert token in css, f"缺少设计 token {token}"
+
+
+def test_base_css_is_translucent_material() -> None:
+    """半透光两要素：半透卡体 + backdrop-filter 模糊（不要噪声层）。"""
+    css = theme.BASE_CSS
+    assert "backdrop-filter" in css, "缺 backdrop-filter（半透光的核心）"
+    assert f"blur({theme.BLUR_PX}px)" in css, "模糊值缺失"
+    assert "saturate(" in css, "缺少饱和增强"
+    assert "rgba(255, 255, 255, 0.55)" in css, "卡体应是半透明白"
+    # 必须有不支持 backdrop-filter 时的兜底
+    assert "@supports" in css, "缺 @supports 兜底分支"
+    assert "rgba(255, 255, 255, 0.90)" in css, "缺不透明兜底"
+    # 噪声层已按用户要求撤销
+    assert "feTurbulence" not in css, "噪声层应已移除"
 
 
 def test_card_shell_without_bg_uses_gradient() -> None:
     html = theme.card_shell(bg_data_uri=None, body="<div>X</div>")
     assert "linear-gradient" in html
-    assert "data:image" not in html
+    assert "url('data:" not in html
+
+
+def test_page_background_tints_photo() -> None:
+    """有图时必须叠一层暖白染色，否则半透亚克力上的深色文字会糊。"""
+    css = theme.page_background_css("data:image/webp;base64,AAAA")
+    assert "linear-gradient(" in css, "缺染色层"
+    assert theme.C_PAGE_TINT in css
+    assert "url('data:image/webp;base64,AAAA')" in css
 
 
 def test_card_shell_with_bg_embeds_data_uri() -> None:

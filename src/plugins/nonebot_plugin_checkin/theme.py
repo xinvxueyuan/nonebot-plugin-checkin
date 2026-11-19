@@ -1,4 +1,11 @@
-"""设计系统：插画背景 + 白色大圆角卡片 + 左粗体标签/右浅灰胶囊值 + 分隔线 + 斜体引用。
+"""设计系统：半透光（glass / acrylic-lite）材质卡片。
+
+材质配方（去掉噪声颗粒，只保半透光）：
+  ① 底层：照片 + 暖白染色层（压亮照片，保证半透卡上的深色文字可读）
+  ② 卡片：半透明白 + backdrop-filter: blur(40px) saturate(180%)（磨砂透光）
+  ③ 边缘：1px 高光描边 + 双层外阴影 + 内侧顶部高光（玻璃厚度感）
+
+不支持 backdrop-filter 的渲染器会退回 90% 不透明的近白卡，保证可读性。
 
 两张卡（签到 / 排行）共用同一套 token 与骨架，只换 body 内容。
 所有注入文本一律 escape，样式集中在 BASE_CSS，避免各卡重复。
@@ -10,15 +17,21 @@ import base64
 from html import escape
 from pathlib import Path
 
-# ── 设计 token（改造外观只调这里）──
-C_PAGE_BG = "linear-gradient(135deg, #fdf6f3 0%, #f7e9e4 45%, #fdf1e7 100%)"
-C_CARD = "#ffffff"
+# ── 半透光材质 token（改材质只调这里）──
+C_ACRYLIC = "rgba(255, 255, 255, 0.55)"  # 半透明卡体（支持 backdrop-filter 时）
+C_ACRYLIC_SOLID = "rgba(255, 255, 255, 0.90)"  # 兜底：不支持模糊时更实
+C_ACRYLIC_BORDER = "rgba(255, 255, 255, 0.72)"  # 高光描边
+C_PAGE_TINT = "rgba(252, 248, 245, 0.42)"  # 照片上的暖白染色层
+C_PAGE_BG = "linear-gradient(135deg, #fdf6f3 0%, #f7e9e4 45%, #fdf1e7 100%)"  # 无图兜底
 C_ARC = "#cfe8f7"
 C_LABEL = "#3c3c3c"
-C_VALUE_BG = "#f4f4f4"
+C_VALUE_BG = "rgba(255, 255, 255, 0.62)"  # 玻璃胶囊
+C_VALUE_BORDER = "rgba(0, 0, 0, 0.05)"
 C_VALUE_FG = "#4a4a4a"
 C_QUOTE = "#8a8a8a"
-C_DIVIDER = "#e8e8e8"
+C_DIVIDER = "rgba(0, 0, 0, 0.07)"
+BLUR_PX = 40
+SATURATE = "180%"
 
 BASE_CSS = f"""
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -30,37 +43,53 @@ body {{
 .page {{
   position: relative;
   padding: 26px;
-  background: {C_PAGE_BG};
-  background-size: cover;
-  background-position: center;
   border-radius: 44px;
   overflow: hidden;
+  background-color: #f7e9e4;
+  background-size: cover;
+  background-position: center;
 }}
+/* 亚克力卡片本体 */
 .card {{
   position: relative;
   width: 560px;
-  background: {C_CARD};
+  background: {C_ACRYLIC_SOLID};
   border-radius: 40px;
   padding: 40px 44px 30px;
-  box-shadow: 0 10px 30px rgba(120, 90, 80, 0.10);
+  border: 1px solid {C_ACRYLIC_BORDER};
+  box-shadow:
+    0 12px 34px rgba(90, 68, 60, 0.16),
+    0 2px 6px rgba(90, 68, 60, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
   overflow: hidden;
 }}
+/* 能模糊就上真·半透光 */
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {{
+  .card {{
+    background: {C_ACRYLIC};
+    -webkit-backdrop-filter: blur({BLUR_PX}px) saturate({SATURATE});
+    backdrop-filter: blur({BLUR_PX}px) saturate({SATURATE});
+  }}
+}}
+.card > * {{ position: relative; z-index: 2; }}
 .arc {{
   position: absolute;
   top: -46px; left: -46px;
   width: 190px; height: 190px;
   border-radius: 50%;
   background: {C_ARC};
-  opacity: 0.75;
+  opacity: 0.55;
+  filter: blur(2px);
+  z-index: 2;
 }}
-.avatar-wrap {{ position: relative; text-align: center; margin: 6px 0 22px; }}
+.avatar-wrap {{ text-align: center; margin: 6px 0 22px; }}
 .avatar {{
   width: 116px; height: 116px;
   border-radius: 50%;
-  border: 5px solid #ffffff;
-  box-shadow: 0 4px 14px rgba(90, 70, 70, 0.18);
+  border: 5px solid rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 16px rgba(90, 70, 70, 0.20);
   object-fit: cover;
-  background: #eef2f6;
+  background: rgba(238, 242, 246, 0.85);
 }}
 .avatar.placeholder {{ display: inline-block; }}
 .rows {{ position: relative; margin-top: 6px; }}
@@ -75,6 +104,7 @@ body {{
   font-size: 22px;
   color: {C_VALUE_FG};
   background: {C_VALUE_BG};
+  border: 1px solid {C_VALUE_BORDER};
   border-radius: 999px;
   padding: 7px 20px;
   max-width: 62%;
@@ -98,7 +128,7 @@ body {{
 .rank-row {{
   display: flex; align-items: center; gap: 14px;
   padding: 9px 4px;
-  border-bottom: 1px solid #f1f1f1;
+  border-bottom: 1px solid {C_DIVIDER};
 }}
 .rank-row:last-child {{ border-bottom: none; }}
 .rank-no {{
@@ -107,30 +137,42 @@ body {{
 }}
 .rank-avatar {{
   width: 38px; height: 38px; border-radius: 50%;
-  border: 2px solid #ffffff;
-  box-shadow: 0 2px 6px rgba(90, 70, 70, 0.14);
-  object-fit: cover; background: #eef2f6;
+  border: 2px solid rgba(255, 255, 255, 0.90);
+  box-shadow: 0 2px 6px rgba(90, 70, 70, 0.16);
+  object-fit: cover; background: rgba(238, 242, 246, 0.85);
+  display: inline-block;
 }}
 .rank-name {{ flex: 1; font-size: 20px; color: {C_LABEL}; overflow: hidden;
               text-overflow: ellipsis; white-space: nowrap; }}
 .rank-pill {{
   font-size: 18px; color: {C_VALUE_FG};
-  background: {C_VALUE_BG}; border-radius: 999px; padding: 5px 15px;
+  background: {C_VALUE_BG};
+  border: 1px solid {C_VALUE_BORDER};
+  border-radius: 999px; padding: 5px 15px;
 }}
 .card-title {{ position: relative; font-size: 21px; font-weight: 700; color: {C_LABEL};
-               text-align: center; margin-bottom: 14px; }}
+               text-align: center; margin-bottom: 14px;
+               text-shadow: 0 1px 0 rgba(255, 255, 255, 0.6); }}
 """
+
+
+def page_background_css(bg_data_uri: str | None) -> str:
+    """底层：照片 + 暖白染色层；无图时用渐变兜底。"""
+    if bg_data_uri:
+        return (
+            f"background-image: linear-gradient({C_PAGE_TINT}, {C_PAGE_TINT}), "
+            f"url('{bg_data_uri}');"
+        )
+    return f"background-image: {C_PAGE_BG};"
 
 
 def card_shell(*, bg_data_uri: str | None, body: str) -> str:
     """整卡外壳。无背景图时用 CSS 渐变兜底。"""
-    page_style = (
-        f" style=\"background-image:url('{bg_data_uri}');\"" if bg_data_uri else ""
-    )
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
         f"<style>{BASE_CSS}</style></head><body>"
-        f'<div class="page"{page_style}><div class="card"><div class="arc"></div>'
+        f'<div class="page" style="{page_background_css(bg_data_uri)}">'
+        '<div class="card"><div class="arc"></div>'
         f"{body}"
         "</div></div></body></html>"
     )
