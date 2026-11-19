@@ -137,3 +137,23 @@ def test_to_webp_handles_png_input() -> None:
     Image.new("RGBA", (100, 100), (255, 0, 0, 128)).save(buf, "PNG")
     out = assets.to_webp(buf.getvalue())
     assert out is not None and out[8:12] == b"WEBP"
+
+
+@pytest.mark.asyncio
+async def test_ensure_bg_writes_webp_not_raw(tmp_path: Path, monkeypatch) -> None:
+    """落盘内容必须是 WebP，而不是原始 JPEG 字节（守住 WebP 转换这一步）。"""
+    jpeg = _make_jpeg(400, 300)
+
+    async def _fake_get(url: str, *, headers: dict[str, str], timeout: float) -> bytes:
+        # 第一次拿列表，第二次拿图片字节
+        if "count=1" in url:
+            return b'[{"url":"https://xbm.example/i/abc.jpg"}]'
+        return jpeg
+
+    monkeypatch.setattr(assets, "_http_get", _fake_get)
+    out = await assets.ensure_bg(tmp_path, 777, api_key="k")
+    assert out is not None
+    data = out.read_bytes()
+    assert out.suffix == ".webp"
+    assert data[:4] == b"RIFF" and data[8:12] == b"WEBP", "落盘的必须是 WebP 容器"
+    assert len(data) < len(jpeg), "WebP 应比原图小"

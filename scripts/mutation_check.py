@@ -173,8 +173,8 @@ MUTATIONS = [
     (
         "M9 排行图卡丢掉昵称（昵称位置印名次）",
         RENDER,
-        '        f\'<span class="nm">{escape(str(row["name"]))}</span>\'\n',
-        '        f\'<span class="nm">{row["rank"]}</span>\'\n',
+        '            f\'<span class="rank-name">{escape(str(r["name"]))}</span>\'\n',
+        '            f\'<span class="rank-name">{r["rank"]}</span>\'\n',
         "排行卡上只剩数字，认不出人",
     ),
     (
