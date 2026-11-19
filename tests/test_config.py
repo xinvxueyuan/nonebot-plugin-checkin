@@ -39,3 +39,31 @@ def test_bounds_reject_out_of_range() -> None:
         Config(checkin_daily_points=0)
     with pytest.raises(ValidationError):
         Config(checkin_rank_size=1)
+
+
+def test_design_system_keys_exist() -> None:
+    from nonebot_plugin_checkin.config import Config
+
+    fields = Config.model_fields
+    for key in [
+        "checkin_bg_url",
+        "checkin_bg_api_key",
+        "checkin_bg_ttl_minutes",
+        "checkin_bg_timeout_seconds",
+        "checkin_quote_ttl_minutes",
+        "checkin_quote_max_chars",
+        "playwright_browsers_path",
+    ]:
+        assert key in fields, f"缺少配置键 {key}"
+
+
+def test_design_system_defaults() -> None:
+    from nonebot_plugin_checkin.config import Config
+
+    f = Config.model_fields
+    assert f["checkin_bg_url"].default == "http://127.0.0.1:4390/v1/random"
+    assert f["checkin_bg_ttl_minutes"].default == 15
+    assert f["checkin_bg_timeout_seconds"].default == 5.0
+    assert f["checkin_quote_ttl_minutes"].default == 1440
+    assert f["checkin_quote_max_chars"].default == 60
+    assert f["playwright_browsers_path"].default is None
