@@ -325,3 +325,53 @@ def test_estimate_quote_height_grows_with_length() -> None:
     short = render._estimate_quote_height("短")
     long = render._estimate_quote_height("很长的签名" * 40)
     assert long > short > 0
+
+
+def test_to_webp_rejects_pixel_bomb() -> None:
+    """小文件大像素（8000×8000 纯色 PNG ≈0.19MB）必须拒绝：解码要 ~183MB。"""
+    import io
+
+    from PIL import Image
+
+    im = Image.new("RGB", (8000, 8000), (10, 20, 30))
+    buf = io.BytesIO()
+    im.save(buf, "PNG", optimize=True)
+    assert assets.to_webp(buf.getvalue()) is None
+
+
+def test_to_webp_accepts_normal_size() -> None:
+    """预算内的图片仍应正常转换。"""
+    out = assets.to_webp(_make_jpeg(1200, 1600))
+    assert out is not None and out[8:12] == b"WEBP"
+
+
+def test_prune_survives_enumeration_error(tmp_path: Path, monkeypatch) -> None:
+    """目录不可枚举时清理要静默返回，不能抛给调用方。"""
+    bg_dir = tmp_path / "backgrounds"
+    bg_dir.mkdir(parents=True)
+
+    def boom(*a, **kw):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(type(bg_dir), "iterdir", boom)
+    assert assets.prune_backgrounds(tmp_path, ttl_minutes=15) == 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_signature_uses_request_start_time(monkeypatch) -> None:
+    """保存必须用「请求开始」的时间戳，否则并发下旧签名会盖掉新签名。"""
+    saved: list[dict] = []
+
+    monkeypatch.setattr(assets.store, "signature_is_fresh", lambda *a, **kw: False)
+    monkeypatch.setattr(
+        assets.store,
+        "save_signature",
+        lambda g, u, s, **kw: saved.append({"g": g, "u": u, "s": s, **kw}),
+    )
+
+    class Bot:
+        async def get_stranger_info(self, **kwargs):
+            return {"long_nick": "新签名"}
+
+    await assets.fetch_signature(Bot(), 1, 2)  # type: ignore[arg-type]
+    assert saved and "now" in saved[0], f"必须传 now=，实际 {saved}"

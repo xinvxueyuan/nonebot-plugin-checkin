@@ -40,6 +40,9 @@ _MIN_BG_BYTES = 2048  # 小于此值视为坏文件
 _SIGNATURE_TIMEOUT_SECONDS = 5.0  # get_stranger_info 的等待上限，防止吊死回执
 _MAX_JSON_BYTES = 64 * 1024  # 随机图 API 的 JSON 响应上限
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 单张背景图上限（20MB，超了就降级为渐变）
+_MAX_PIXELS = (
+    40_000_000  # 解码前像素预算（4000万≈120MB RGB）：挡住「小文件大像素」的炸弹
+)
 _BG_PRUNE_EXTRA_SECONDS = 3600  # 清理时比 TTL 多留 1 小时，避免刚过期的被立刻删
 
 
@@ -153,6 +156,14 @@ def to_webp(body: bytes, *, quality: int = _WEBP_QUALITY) -> bytes | None:
     limit = _WEBP_MAX_EDGE  # 长边上限
     try:
         with Image.open(io.BytesIO(body)) as im:
+            # 解码前先按**尺寸**拦一道：8000×8000 的纯色 PNG 只有 0.19MB，
+            # 能绕过字节上限，但 convert("RGB") 会吃掉 ~183MB。必须在 convert 前拒绝。
+            px = im.width * im.height
+            if px > _MAX_PIXELS:
+                logger.warning(
+                    f"背景图 {im.width}x{im.height}={px} 像素超预算 {_MAX_PIXELS}，跳过"
+                )
+                return None
             rgb = im.convert("RGB")
             rgb.thumbnail((limit, limit))
             buf = io.BytesIO()
@@ -203,8 +214,12 @@ async def ensure_bg(
         return None
     finally:
         tmp.unlink(missing_ok=True)  # replace 成功后是空操作；失败时清掉残留
-    # 顺手清掉早已过期的以及遗留的 .part（避免磁盘无限增长）
-    prune_backgrounds(data_dir)
+    # 顺手清掉早已过期的以及遗留的 .part（避免磁盘无限增长）。
+    # 清理是 best-effort：即便失败也**必须**把已生成好的背景返回，不能阻断签到回执。
+    try:
+        prune_backgrounds(data_dir)
+    except Exception as exc:  # 清理绝不该影响主流程
+        logger.warning(f"背景图清理失败（忽略）: {exc!r}")
     return dest
 
 
@@ -215,14 +230,20 @@ def prune_backgrounds(
 
     TTL 为 0（永不过期）时只清 `.part` 残留。
     额外多留 1 小时再删：刚过期的文件还有人可能命中，别立刻抹掉。
+    目录枚举失败也只记日志：清理是best-effort，绝不能阻断签到回执。
     """
     bg_dir = data_dir / "backgrounds"
-    if not bg_dir.is_dir():
+    try:
+        if not bg_dir.is_dir():
+            return 0
+        entries = list(bg_dir.iterdir())  # 枚举本身也可能 PermissionError
+    except OSError as exc:
+        logger.warning(f"背景图目录不可枚举，跳过清理: {bg_dir}, {exc!r}")
         return 0
     ttl = plugin_config.checkin_bg_ttl_minutes if ttl_minutes is None else ttl_minutes
     stamp = time.time() if now is None else now
     removed = 0
-    for entry in bg_dir.iterdir():
+    for entry in entries:
         try:
             if entry.suffix == ".part":
                 entry.unlink(missing_ok=True)
@@ -268,6 +289,9 @@ async def fetch_signature(bot: Bot | None, group_id: int, user_id: int) -> str |
         logger.warning(f"签名缓存读取失败: group={group_id} user={user_id}, {exc!r}")
     if bot is None:
         return None
+    # 时间戳取「请求开始前」而非写入时刻：并发下 B 先返回新签名、A 后返回旧签名时，
+    # 若用写入时刻，A 会拿到更大的时间戳从而通过 only_if_newer 的检查、把旧值盖回去。
+    started_at = time.time()
     try:
         info = await asyncio.wait_for(
             bot.get_stranger_info(user_id=user_id), timeout=_SIGNATURE_TIMEOUT_SECONDS
@@ -280,7 +304,7 @@ async def fetch_signature(bot: Bot | None, group_id: int, user_id: int) -> str |
         # 空签名也要落库（用空串占位）：否则每次都判定缓存不新鲜 →
         # 每人每次都重新打协议端，白烧请求。
         try:
-            store.save_signature(group_id, user_id, "")
+            store.save_signature(group_id, user_id, "", now=started_at)
         except Exception as exc:
             logger.warning(f"空签名落库失败: user_id={user_id}, {exc!r}")
         return None
@@ -288,7 +312,7 @@ async def fetch_signature(bot: Bot | None, group_id: int, user_id: int) -> str |
     if len(text) > limit:
         text = text[:limit].rstrip() + "…"
     try:
-        store.save_signature(group_id, user_id, text)
+        store.save_signature(group_id, user_id, text, now=started_at)
     except Exception as exc:
         logger.warning(f"个性签名落库失败: user_id={user_id}, {exc!r}")
     return text

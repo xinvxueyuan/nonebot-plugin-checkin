@@ -20,7 +20,8 @@ from . import theme
 
 logger = logging.getLogger("nonebot_plugin_checkin")
 
-_CARD_VIEWPORT = {"width": 612, "height": 700}
+_CARD_WIDTH = 612
+_CARD_VIEWPORT_H = 700  # 签到卡基础高度（不含长引用额外需要的高度）
 _RANK_VIEWPORT_H = 230  # 排行的固定头部高度（不含每行）
 
 
@@ -156,7 +157,11 @@ async def render_checkin_card(**kwargs: Any) -> bytes | None:
     """渲染签到卡片；失败返回 None（调用方回退纯文本）。"""
     try:
         html = _card_html(**kwargs)
-        return await html_to_pic(html, viewport=_CARD_VIEWPORT)
+        quote = kwargs.get("quote")
+        height = _CARD_VIEWPORT_H + _estimate_quote_height(quote)
+        return await html_to_pic(
+            html, viewport={"width": _CARD_WIDTH, "height": height}
+        )
     except Exception as exc:  # 渲染不可用不该让命令失败
         logger.warning(f"签到卡片渲染失败，回退纯文本: {exc!r}")
         return None

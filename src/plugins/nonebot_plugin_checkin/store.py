@@ -206,11 +206,14 @@ def save_signature(
     )
     with _conn() as conn:
         if only_if_newer:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
+            # 安全：拼接的只有模块级常量表名 _T_SIGNATURES，所有用户数据走 ? 占位符。
             conn.execute(
                 sql_common + " WHERE excluded.fetched_at >= fetched_at",
                 (group_id, user_id, signature, ts),
             )
         else:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
             conn.execute(sql_common, (group_id, user_id, signature, ts))
         conn.commit()
 
