@@ -47,6 +47,9 @@ SUBSETS = {
     "M10": ["tests/test_assets.py", *_COMMON],
     "M11": ["tests/test_assets.py::test_ensure_bg_returns_none_on_failure", *_COMMON],
     "M12": ["tests/test_theme.py", *_COMMON],
+    "M13": ["tests/test_assets.py", *_COMMON],
+    "M14": ["tests/test_assets.py", *_COMMON],
+    "M15": ["tests/test_store.py", *_COMMON],
 }
 
 
@@ -204,6 +207,27 @@ MUTATIONS = [
         '    if not text or not text.strip():\n        return ""\n',
         '    if False:  # 变异：空文本照样渲染\n        return ""\n',
         "空签名时底部多出一块空白引用",
+    ),
+    (
+        "M13 不拦像素炸弹（小文件大像素照样解码）",
+        ASSETS,
+        "            if px > _MAX_PIXELS:\n",
+        "            if False:  # 变异：不拦像素炸弹\n",
+        "8000x8000 纯色 PNG 只 0.19MB，解码要 183MB → OOM",
+    ),
+    (
+        "M14 签名用写入时刻而非请求开始时刻（旧值盖新值）",
+        ASSETS,
+        "        store.save_signature(group_id, user_id, text, now=started_at)\n",
+        "        store.save_signature(group_id, user_id, text)\n",
+        "并发下后返回的旧签名拿到更大时间戳、盖掉新签名",
+    ),
+    (
+        "M15 无脑覆盖旧签名（去掉 only_if_newer 的时间比较）",
+        STORE,
+        '                sql_common + " WHERE excluded.fetched_at >= fetched_at",\n',
+        "                sql_common,\n",
+        "旧签名无条件覆盖新签名并续命一个 TTL",
     ),
 ]
 
