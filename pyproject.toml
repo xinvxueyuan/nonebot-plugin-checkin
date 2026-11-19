@@ -31,6 +31,8 @@ dependencies = [
     "nonebot-plugin-localstore>=0.7.0",
     # 头像走 q1.qlogo.cn 公开地址，直接 httpx 下载（不经协议端）
     "httpx>=0.27.0",
+    # 背景图转 WebP（Pillow 自带 libwebp，无需系统包）；WebP 比原图小约 3 倍
+    "pillow>=11.0.0",
     # Windows 没有系统 tzdata，zoneinfo 需要它才能解析 Asia/Shanghai
     "tzdata>=2024.1",
 ]
