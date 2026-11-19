@@ -12,6 +12,7 @@ from .service import CheckinState
 _T_STATS = "checkin_stats"
 _T_LOG = "checkin_log"
 _T_MEMBERS = "checkin_members"
+_T_SIGNATURES = "checkin_signatures"
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {_T_STATS} (
@@ -36,6 +37,13 @@ CREATE TABLE IF NOT EXISTS {_T_MEMBERS} (
     user_id     INTEGER NOT NULL,
     nickname    TEXT    NOT NULL,
     nickname_at REAL    NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS {_T_SIGNATURES} (
+    group_id   INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    signature  TEXT    NOT NULL,
+    fetched_at REAL    NOT NULL,
     PRIMARY KEY (group_id, user_id)
 );
 """
@@ -175,3 +183,43 @@ def count_log(*, group_id: int, user_id: int) -> int:
             (group_id, user_id),
         ).fetchone()
     return int(row["n"]) if row else 0
+
+
+def save_signature(
+    group_id: int, user_id: int, signature: str, *, now: float | None = None
+) -> None:
+    """写入个性签名（按群+人）。"""
+    ts = time.time() if now is None else now
+    conn = _conn()
+    conn.execute(
+        f"INSERT INTO {_T_SIGNATURES} (group_id, user_id, signature, fetched_at) "
+        "VALUES (?,?,?,?) ON CONFLICT (group_id, user_id) DO UPDATE SET "
+        "signature=excluded.signature, fetched_at=excluded.fetched_at",
+        (group_id, user_id, signature, ts),
+    )
+    conn.commit()
+
+
+def get_signature(group_id: int, user_id: int) -> str | None:
+    """读个性签名；没有返回 None。"""
+    row = _conn().execute(
+        f"SELECT signature FROM {_T_SIGNATURES} WHERE group_id=? AND user_id=?",
+        (group_id, user_id),
+    ).fetchone()
+    return row["signature"] if row else None
+
+
+def signature_is_fresh(
+    group_id: int, user_id: int, *, ttl_minutes: int, now: float | None = None
+) -> bool:
+    """缓存存在且未过期。`ttl_minutes == 0` 表示永不过期。"""
+    row = _conn().execute(
+        f"SELECT fetched_at FROM {_T_SIGNATURES} WHERE group_id=? AND user_id=?",
+        (group_id, user_id),
+    ).fetchone()
+    if row is None:
+        return False
+    if ttl_minutes <= 0:
+        return True
+    stamp = time.time() if now is None else now
+    return (stamp - float(row["fetched_at"])) < ttl_minutes * 60

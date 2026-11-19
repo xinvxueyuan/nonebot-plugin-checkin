@@ -138,3 +138,27 @@ def test_log_has_one_row_per_day() -> None:
     _checkin(G, U1, "2026-10-22", 12, 2)
     _checkin(G, U1, "2026-10-22", 12, 2)  # 重复
     assert store.count_log(group_id=G, user_id=U1) == 2
+
+
+def test_signature_upsert_and_read(tmp_path):
+    from nonebot_plugin_checkin import store as st
+
+    st.init(tmp_path / "c.sqlite")
+    assert st.get_signature(1, 2) is None
+    st.save_signature(1, 2, "人生的最后一课，学会离别")
+    assert st.get_signature(1, 2) == "人生的最后一课，学会离别"
+    st.save_signature(1, 2, "新签名")
+    assert st.get_signature(1, 2) == "新签名"
+
+
+def test_signature_ttl_freshness(tmp_path):
+    import time
+
+    from nonebot_plugin_checkin import store as st
+
+    st.init(tmp_path / "c.sqlite")
+    st.save_signature(1, 2, "旧")
+    assert st.signature_is_fresh(1, 2, ttl_minutes=5) is True
+    assert st.signature_is_fresh(1, 2, ttl_minutes=5, now=time.time() + 6 * 60) is False
+    assert st.signature_is_fresh(1, 2, ttl_minutes=0) is True
+    assert st.signature_is_fresh(9, 9, ttl_minutes=5) is False
