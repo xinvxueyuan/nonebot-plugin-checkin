@@ -34,11 +34,28 @@ from nonebot import get_driver
 
 from . import envbridge, store
 
+# 桥接必须在**导入阶段**完成，不能等到 on_startup：
+# NoneBot 按注册顺序执行启动钩子，若 htmlrender 先加载，它的钩子会先启动浏览器，
+# 那时 .env 里的 PLAYWRIGHT_BROWSERS_PATH 还没进 os.environ，会启动失败。
+# 这里包一层 try：插件导入期 config 已就绪，但异常不该让整个插件加载失败。
+try:
+    envbridge.bridge_playwright_path(
+        getattr(get_driver().config, "playwright_browsers_path", None)
+    )
+except Exception as exc:  # pragma: no cover - 极端情况下 driver 未就绪
+    import logging
+
+    logging.getLogger("nonebot_plugin_checkin").warning(
+        f"导入期桥接 PLAYWRIGHT_BROWSERS_PATH 失败（不影响其它功能）: {exc!r}"
+    )
+
 
 async def _startup_init() -> None:
-    """启动时：① 桥接 PLAYWRIGHT_BROWSERS_PATH ② 按 localstore 数据目录建表（幂等）。"""
-    # 让 .env 里配置的浏览器路径真正进 os.environ（Playwright 只认环境变量）。
-    # systemd 已设 Environment= 时本调用不会覆盖。
+    """启动钩子：按 localstore 的数据目录建表（幂等）。
+
+    PLAYWRIGHT_BROWSERS_PATH 的桥接已在模块导入阶段完成（见上），
+    这里再调一次是无害的兜底（已有值时不覆盖）。
+    """
     envbridge.bridge_playwright_path(
         getattr(get_driver().config, "playwright_browsers_path", None)
     )

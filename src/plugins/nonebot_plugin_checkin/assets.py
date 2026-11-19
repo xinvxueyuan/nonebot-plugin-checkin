@@ -38,6 +38,13 @@ _WEBP_METHOD = 4  # 4 = 速度与压缩率的平衡点
 _WEBP_MAX_EDGE = 800  # 长边上限（卡片宽 ~560px，800 已足够）
 _MIN_BG_BYTES = 2048  # 小于此值视为坏文件
 _SIGNATURE_TIMEOUT_SECONDS = 5.0  # get_stranger_info 的等待上限，防止吊死回执
+_MAX_JSON_BYTES = 64 * 1024  # 随机图 API 的 JSON 响应上限
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 单张背景图上限（20MB，超了就降级为渐变）
+_BG_PRUNE_EXTRA_SECONDS = 3600  # 清理时比 TTL 多留 1 小时，避免刚过期的被立刻删
+
+
+class ResponseTooLargeError(Exception):
+    """上游响应超过体积上限（不携带消息，细节由调用方记日志）。"""
 
 
 # ── 背景图 ──
@@ -66,19 +73,40 @@ def bg_is_fresh(
 
 
 async def _http_get(
-    url: str, *, headers: dict[str, str], timeout: float, follow_redirects: bool = True
+    url: str,
+    *,
+    headers: dict[str, str],
+    timeout: float,
+    follow_redirects: bool = True,
+    max_bytes: int | None = None,
 ) -> bytes:
     """单点 HTTP GET；抽成独立函数便于测试替换。
 
     `follow_redirects=False` 用于带凭证的请求：httpx 默认会把自定义头（如 `x-api-key`）
     原样带到重定向目标，一旦上游返回跨域 302 就把 key 泄给第三方。
+
+    `max_bytes` 用于限制响应体积（**流式读取**，超限即中止）：
+    上游若返回一张几百 MB 的图，`resp.content` 会把它整个读进内存并 OOM。
     """
     async with httpx.AsyncClient(
         timeout=timeout, follow_redirects=follow_redirects
     ) as client:
-        resp = await client.get(url, headers=headers)
-        resp.raise_for_status()
-        return resp.content
+        if max_bytes is None:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            return resp.content
+        # 先看 Content-Length，能提前拒绝就直接拒
+        async with client.stream("GET", url, headers=headers) as resp:
+            resp.raise_for_status()
+            declared = resp.headers.get("content-length")
+            if declared is not None and int(declared) > max_bytes:
+                raise ResponseTooLargeError
+            buf = bytearray()
+            async for chunk in resp.aiter_bytes():
+                buf.extend(chunk)
+                if len(buf) > max_bytes:
+                    raise ResponseTooLargeError
+            return bytes(buf)
 
 
 async def _fetch_random_image(api_key: str, timeout: float) -> bytes | None:
@@ -90,19 +118,23 @@ async def _fetch_random_image(api_key: str, timeout: float) -> bytes | None:
         headers={"x-api-key": api_key},
         timeout=timeout,
         follow_redirects=False,
+        max_bytes=_MAX_JSON_BYTES,
     )
     items = json.loads(raw)
     if not items:
         return None
     image_url: str = items[0]["url"]
-    # 同机回环：把公网 URL 换成本地直连，省一次 CF 往返
-    if "://" in image_url:
-        path = image_url.split("/", 3)[3]
-        local = base.split("/v1/")[0] + "/" + path
+    # 同机回环：把公网 URL 换成本地直连，省一次 CF 往返。
+    # 用 rsplit("/", 3) 而不是 split("/", 3)[3]：后者在 URL 无路径段时抛 IndexError。
+    parts = image_url.split("/", 3)
+    if len(parts) >= 4 and parts[3]:
+        local = base.split("/v1/")[0] + "/" + parts[3]
     else:
         local = image_url
-    # 取图字节这次不带凭证，可以安全跟随重定向
-    return await _http_get(local, headers={}, timeout=timeout)
+    # 取图字节这次不带凭证，可以安全跟随重定向；体积有硬上限。
+    return await _http_get(
+        local, headers={}, timeout=timeout, max_bytes=_MAX_IMAGE_BYTES
+    )
 
 
 def to_webp(body: bytes, *, quality: int = _WEBP_QUALITY) -> bytes | None:
@@ -171,7 +203,41 @@ async def ensure_bg(
         return None
     finally:
         tmp.unlink(missing_ok=True)  # replace 成功后是空操作；失败时清掉残留
+    # 顺手清掉早已过期的以及遗留的 .part（避免磁盘无限增长）
+    prune_backgrounds(data_dir)
     return dest
+
+
+def prune_backgrounds(
+    data_dir: Path, *, ttl_minutes: int | None = None, now: float | None = None
+) -> int:
+    """删掉过期背景图与残留的 .part 文件，返回删除数量。
+
+    TTL 为 0（永不过期）时只清 `.part` 残留。
+    额外多留 1 小时再删：刚过期的文件还有人可能命中，别立刻抹掉。
+    """
+    bg_dir = data_dir / "backgrounds"
+    if not bg_dir.is_dir():
+        return 0
+    ttl = plugin_config.checkin_bg_ttl_minutes if ttl_minutes is None else ttl_minutes
+    stamp = time.time() if now is None else now
+    removed = 0
+    for entry in bg_dir.iterdir():
+        try:
+            if entry.suffix == ".part":
+                entry.unlink(missing_ok=True)
+                removed += 1
+                continue
+            if entry.suffix != ".webp" or ttl <= 0:
+                continue
+            if (stamp - entry.stat().st_mtime) > ttl * 60 + _BG_PRUNE_EXTRA_SECONDS:
+                entry.unlink(missing_ok=True)
+                removed += 1
+        except OSError as exc:  # 单个文件失败不影响其它
+            logger.debug(f"清理背景图失败: {entry}, {exc!r}")
+    if removed:
+        logger.info(f"已清理 {removed} 个过期背景图/残留临时文件")
+    return removed
 
 
 # ── 个性签名 ──
@@ -211,6 +277,12 @@ async def fetch_signature(bot: Bot | None, group_id: int, user_id: int) -> str |
         return None
     text = _extract_long_nick(info)
     if text is None:
+        # 空签名也要落库（用空串占位）：否则每次都判定缓存不新鲜 →
+        # 每人每次都重新打协议端，白烧请求。
+        try:
+            store.save_signature(group_id, user_id, "")
+        except Exception as exc:
+            logger.warning(f"空签名落库失败: user_id={user_id}, {exc!r}")
         return None
     limit = plugin_config.checkin_quote_max_chars
     if len(text) > limit:

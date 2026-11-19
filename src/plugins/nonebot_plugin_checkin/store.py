@@ -186,22 +186,37 @@ def count_log(*, group_id: int, user_id: int) -> int:
 
 
 def save_signature(
-    group_id: int, user_id: int, signature: str, *, now: float | None = None
+    group_id: int,
+    user_id: int,
+    signature: str,
+    *,
+    now: float | None = None,
+    only_if_newer: bool = True,
 ) -> None:
-    """写入个性签名（按群+人）。"""
+    """写入个性签名（按群+人）。
+
+    `only_if_newer=True` 时，若库里已有**更新**的 `fetched_at` 就不覆盖：
+    并发请求下先发出去的那次可能后返回，无条件覆盖会让旧签名又续命一个 TTL。
+    """
     ts = time.time() if now is None else now
-    conn = _conn()
-    conn.execute(
+    sql_common = (
         f"INSERT INTO {_T_SIGNATURES} (group_id, user_id, signature, fetched_at) "
         "VALUES (?,?,?,?) ON CONFLICT (group_id, user_id) DO UPDATE SET "
-        "signature=excluded.signature, fetched_at=excluded.fetched_at",
-        (group_id, user_id, signature, ts),
+        "signature=excluded.signature, fetched_at=excluded.fetched_at"
     )
-    conn.commit()
+    with _conn() as conn:
+        if only_if_newer:
+            conn.execute(
+                sql_common + " WHERE excluded.fetched_at >= fetched_at",
+                (group_id, user_id, signature, ts),
+            )
+        else:
+            conn.execute(sql_common, (group_id, user_id, signature, ts))
+        conn.commit()
 
 
 def get_signature(group_id: int, user_id: int) -> str | None:
-    """读个性签名；没有返回 None。"""
+    """读个性签名；没有记录、或缓存的是空签名（占位）都返回 None。"""
     row = (
         _conn()
         .execute(
@@ -210,7 +225,9 @@ def get_signature(group_id: int, user_id: int) -> str | None:
         )
         .fetchone()
     )
-    return row["signature"] if row else None
+    if not row:
+        return None
+    return row["signature"] or None  # 空串是「无签名」的占位，对外仍按没有处理
 
 
 def signature_is_fresh(

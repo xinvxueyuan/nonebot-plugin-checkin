@@ -1,6 +1,16 @@
 import os
 
+import pytest
+
 from nonebot_plugin_checkin import envbridge
+
+
+@pytest.fixture(autouse=True)
+def _isolate_env():
+    """每个用例前后清干净键，避免 delenv(raising=False) 的副作用泄漏。"""
+    os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
+    yield
+    os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
 
 
 def test_bridge_sets_when_config_has_value(monkeypatch) -> None:

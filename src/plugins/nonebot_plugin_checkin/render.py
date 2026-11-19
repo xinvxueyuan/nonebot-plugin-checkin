@@ -50,7 +50,7 @@ def _card_html(
     ]
     if rank is not None:
         rows.append(theme.row("本群排名", f"#{rank}"))
-    tail = theme.divider() + theme.quote_block(quote) if quote else ""
+    tail = _quote_tail(quote)
     body = (
         theme.avatar_block(avatar)
         + f'<div class="card-title">{escape(title)}</div>'
@@ -58,6 +58,16 @@ def _card_html(
         + tail
     )
     return theme.card_shell(bg_data_uri=theme.bg_data_uri(bg), body=body)  # type: ignore[arg-type]
+
+
+def _quote_tail(quote: str | None) -> str:
+    """引用区的「分隔线 + 引用」；空/纯空白引用整块省略（连分隔线一起去掉）。
+
+    不能用 `if quote` 判断：`"   "` 是真值，会渲染出一条只有分隔线、没有内容的尾巴。
+    """
+    if not quote or not quote.strip():
+        return ""
+    return theme.divider() + theme.quote_block(quote)
 
 
 def _rank_html(
@@ -80,14 +90,32 @@ def _rank_html(
             img = '<span class="rank-avatar"></span>'
         items.append(
             '<div class="rank-row">'
-            f'<span class="rank-no">{r["rank"]}</span>{img}'
+            f'<span class="rank-no">{escape(str(r["rank"]))}</span>{img}'
             f'<span class="rank-name">{escape(str(r["name"]))}</span>'
-            f'<span class="rank-pill">{r["points"]} 分</span>'
+            f'<span class="rank-pill">{escape(str(r["points"]))} 分</span>'
             "</div>"
         )
-    tail = theme.divider() + theme.quote_block(quote) if quote else ""
+    tail = _quote_tail(quote)
     body = f'<div class="card-title">{escape(title)}</div>' + "".join(items) + tail
     return theme.card_shell(bg_data_uri=theme.bg_data_uri(bg), body=body)  # type: ignore[arg-type]
+
+
+def _estimate_quote_height(quote: str | None) -> int:
+    """估算引用区占用的像素高度（用于把视口撑够，避免长签名被裁掉）。
+
+    卡片内容宽度约 472px、字号 19px、行高 1.65；按每行约 26 个全角字符估算。
+    """
+    if not quote or not quote.strip():
+        return 0
+    text = quote.strip()
+    import unicodedata
+
+    # 全角算 2 单位、半角 1 单位；每行约 52 单位
+    units = sum(
+        2 if unicodedata.east_asian_width(ch) in ("W", "F", "A") else 1 for ch in text
+    )
+    lines = max(1, -(-units // 52))  # ceil
+    return int(lines * 19 * 1.65) + 34  # 行高 + 分隔线/内边距
 
 
 async def render_rank_card(
@@ -97,9 +125,12 @@ async def render_rank_card(
     quote: str | None = None,
     bg: object | None = None,
 ) -> bytes | None:
-    """渲染排行卡片；失败返回 None（调用方回退纯文本）。"""
+    """渲染排行卡片；失败返回 None（调用方回退纯文本）。
+
+    视口高度 = 头部 + 每行 + **引用区实际所需高度**：固定值会让长签名被裁掉。
+    """
     try:
-        height = _RANK_VIEWPORT_H + 57 * len(rows)
+        height = _RANK_VIEWPORT_H + 57 * len(rows) + _estimate_quote_height(quote)
         return await html_to_pic(
             _rank_html(rows, title=title, quote=quote, bg=bg),
             viewport={"width": 612, "height": height},

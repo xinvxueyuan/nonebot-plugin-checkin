@@ -150,6 +150,7 @@ async def test_ensure_bg_writes_webp_not_raw(tmp_path: Path, monkeypatch) -> Non
         headers: dict[str, str],
         timeout: float,
         follow_redirects: bool = True,
+        max_bytes: int | None = None,
     ) -> bytes:
         # 第一次拿列表，第二次拿图片字节
         if "count=1" in url:
@@ -230,6 +231,7 @@ async def test_ensure_bg_uses_unique_temp_file(tmp_path: Path) -> None:
             headers: dict[str, str],
             timeout: float,
             follow_redirects: bool = True,
+            max_bytes: int | None = None,
         ) -> bytes:
             if "count=1" in url:
                 return b'[{"url":"https://xbm.example/i/abc.jpg"}]'
@@ -242,3 +244,84 @@ async def test_ensure_bg_uses_unique_temp_file(tmp_path: Path) -> None:
     assert seen, "没有落盘"
     # 临时文件名必须含随机后缀，不能是固定的 .webp.part
     assert not re.search(r"\.webp\.part$", seen[0]), f"临时文件名不可复用: {seen[0]}"
+
+
+def test_prune_removes_stale_and_part_files(tmp_path: Path) -> None:
+    """过期背景图与残留 .part 必须被清理，避免磁盘无限增长。"""
+    import os
+    import time
+
+    bg_dir = tmp_path / "backgrounds"
+    bg_dir.mkdir(parents=True)
+    now = time.time()
+
+    fresh = bg_dir / "1.webp"
+    fresh.write_bytes(b"RIFF" + b"0" * 4096)
+    stale = bg_dir / "2.webp"
+    stale.write_bytes(b"RIFF" + b"0" * 4096)
+    part = bg_dir / "3.webp.abc.part"
+    part.write_bytes(b"x")
+
+    # 让 stale 看起来是一天前的（TTL 15min + 1h 余量）
+    old = now - 26 * 3600
+    os.utime(stale, (old, old))
+    os.utime(fresh, (now, now))
+
+    removed = assets.prune_backgrounds(tmp_path, ttl_minutes=15, now=now)
+    assert removed == 2
+    assert fresh.exists(), "未过期的不能删"
+    assert not stale.exists(), "过期的应被删"
+    assert not part.exists(), "残留 .part 应被删"
+
+
+@pytest.mark.asyncio
+async def test_fetch_signature_caches_empty_signature(monkeypatch) -> None:
+    """空签名也要落库占位，否则每人每次都重新打协议端。"""
+    saved: list[tuple[int, int, str]] = []
+
+    monkeypatch.setattr(assets.store, "signature_is_fresh", lambda *a, **kw: False)
+    monkeypatch.setattr(
+        assets.store, "save_signature", lambda g, u, s, **kw: saved.append((g, u, s))
+    )
+
+    class Bot:
+        async def get_stranger_info(self, **kwargs):
+            return {"long_nick": ""}  # 有字段但为空
+
+    got = await assets.fetch_signature(Bot(), 1, 2)  # type: ignore[arg-type]
+    assert got is None
+    assert saved == [(1, 2, "")], f"空签名应以空串落库，实际 {saved}"
+
+
+@pytest.mark.asyncio
+async def test_ensure_bg_rejects_oversized_image(tmp_path: Path, monkeypatch) -> None:
+    """上游返回超大图时必须拒绝（防 OOM）。"""
+    monkeypatch.setattr(assets, "_MAX_IMAGE_BYTES", 1024)
+
+    async def _huge(url: str, **kw):
+        raise ValueError("响应体积超过上限 1024，已中止下载")
+
+    monkeypatch.setattr(assets, "_http_get", _huge)
+    out = await assets.ensure_bg(tmp_path, 555, api_key="k")
+    assert out is None
+    assert not assets.bg_path(tmp_path, 555).exists()
+
+
+def test_quote_tail_hides_divider_for_blank(tmp_path=None) -> None:
+    """纯空白引用不能只留一条分隔线。"""
+    from nonebot_plugin_checkin import render
+
+    assert render._quote_tail("") == ""
+    assert render._quote_tail("   ") == ""
+    assert render._quote_tail(None) == ""
+    assert 'class="divider"' in render._quote_tail("有内容")
+
+
+def test_estimate_quote_height_grows_with_length() -> None:
+    """长签名必须把视口撑高，否则会被裁掉。"""
+    from nonebot_plugin_checkin import render
+
+    assert render._estimate_quote_height(None) == 0
+    short = render._estimate_quote_height("短")
+    long = render._estimate_quote_height("很长的签名" * 40)
+    assert long > short > 0
