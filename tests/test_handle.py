@@ -149,9 +149,17 @@ async def test_rank_card_uses_names_and_avatars_then_falls_back(
     )
     seen: dict[str, Any] = {}
 
-    async def fake_render(rows: list[dict[str, Any]], *, title: str) -> bytes:
+    async def fake_render(
+        rows: list[dict[str, Any]],
+        *,
+        title: str,
+        quote: str | None = None,
+        bg: object | None = None,
+    ) -> bytes:
         seen["rows"] = rows
         seen["title"] = title
+        seen["quote"] = quote
+        seen["bg"] = bg
         return PNG
 
     async def fake_names(
@@ -174,7 +182,13 @@ async def test_rank_card_uses_names_and_avatars_then_falls_back(
     ]
     assert _has_type(bot, "at") and _has_type(bot, "image")
 
-    async def dead_render(_rows: list[dict[str, Any]], *, title: str) -> None:
+    async def dead_render(
+        _rows: list[dict[str, Any]],
+        *,
+        title: str,
+        quote: str | None = None,
+        bg: object | None = None,
+    ) -> None:
         return None
 
     monkeypatch.setattr(render, "render_rank_card", dead_render)
