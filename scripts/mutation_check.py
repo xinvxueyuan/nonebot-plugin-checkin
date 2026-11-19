@@ -201,8 +201,8 @@ MUTATIONS = [
     (
         "M12 空引用也渲染引用区（不出分隔线判断失效）",
         THEME,
-        "    if not text or not text.strip():\n        return \"\"\n",
-        "    if False:  # 变异：空文本照样渲染\n        return \"\"\n",
+        '    if not text or not text.strip():\n        return ""\n',
+        '    if False:  # 变异：空文本照样渲染\n        return ""\n',
         "空签名时底部多出一块空白引用",
     ),
 ]
