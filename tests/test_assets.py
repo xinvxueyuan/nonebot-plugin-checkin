@@ -1,3 +1,6 @@
+import asyncio
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -417,3 +420,193 @@ async def test_fetch_signature_uses_request_start_time(monkeypatch) -> None:
 
     await assets.fetch_signature(Bot(), 1, 2)  # type: ignore[arg-type]
     assert saved and "now" in saved[0], f"必须传 now=，实际 {saved}"
+
+
+# ── 同群不撞图（背景图去重） ──
+
+
+class _FakeLibrary:
+    """假 xbm 上游：固定图库，`?count=N` 一次发 N 个互不重复的 URL。
+
+    故意**永远从第一张发**（最坏情况：每次请求都先给同一张），
+    这样"两人同群会不会撞"就完全取决于分配逻辑，而不是上游给不给面子。
+    每次请求都 `await asyncio.sleep(0)`，让并发用例真的能交错。
+    """
+
+    def __init__(self, images: dict[str, bytes]) -> None:
+        self.images = images
+        self.order = list(images)
+        self.requests: list[str] = []
+
+    async def get(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str],
+        timeout: float,
+        follow_redirects: bool = True,
+        max_bytes: int | None = None,
+    ) -> bytes:
+        self.requests.append(url)
+        await asyncio.sleep(0)  # 交出控制权：并发场景才会真的交错
+        if "count=" in url:
+            count = int(url.rsplit("count=", 1)[1].split("&", 1)[0])
+            picked = self.order[:count]
+            payload = [{"url": f"https://xbm.example/i/{name}.jpg"} for name in picked]
+            return json.dumps(payload).encode()
+        name = url.rsplit("/", 1)[-1].removesuffix(".jpg")
+        return self.images[name]
+
+
+def _library() -> _FakeLibrary:
+    """三张互不相同的图（尺寸不同 → 像素不同 → WebP 也不同）。"""
+    return _FakeLibrary({
+        "a": _make_jpeg(120, 80),
+        "b": _make_jpeg(121, 80),
+        "c": _make_jpeg(122, 80),
+    })
+
+
+@pytest.mark.asyncio
+async def test_same_group_users_get_different_backgrounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同群两人必须拿到不同的图 —— 生产上"两人 md5 相同"那次事故的回归测试。"""
+    lib = _library()
+    monkeypatch.setattr(assets, "_http_get", lib.get)
+    p1 = await assets.ensure_bg(tmp_path, 111, api_key="k", group_id=9001)
+    p2 = await assets.ensure_bg(tmp_path, 222, api_key="k", group_id=9001)
+    assert p1 is not None and p2 is not None
+    assert p1.read_bytes() != p2.read_bytes(), "同群两人拿到了同一张背景图"
+    index = json.loads(assets.bg_index_path(tmp_path).read_text(encoding="utf-8"))
+    assert index["111"]["sha256"] != index["222"]["sha256"]
+    assert index["111"]["group_id"] == index["222"]["group_id"] == 9001
+
+
+@pytest.mark.asyncio
+async def test_different_groups_may_share_one_background(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """去重只限本群：图库只有一张时，两个群都能用它（否则小图库会互相饿死）。"""
+    lib = _FakeLibrary({"a": _make_jpeg(120, 80)})
+    monkeypatch.setattr(assets, "_http_get", lib.get)
+    p1 = await assets.ensure_bg(tmp_path, 111, api_key="k", group_id=9001)
+    p2 = await assets.ensure_bg(tmp_path, 222, api_key="k", group_id=9002)
+    assert p1 is not None and p2 is not None
+    assert p1.read_bytes() == p2.read_bytes(), "不同群不该互相让位"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_group_users_still_differ(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """并发签到（asyncio.gather）也要两人不同图，且索引文件必须还能解析。"""
+    lib = _library()
+    monkeypatch.setattr(assets, "_http_get", lib.get)
+    p1, p2 = await asyncio.gather(
+        assets.ensure_bg(tmp_path, 111, api_key="k", group_id=9001),
+        assets.ensure_bg(tmp_path, 222, api_key="k", group_id=9001),
+    )
+    assert p1 is not None and p2 is not None
+    assert p1.read_bytes() != p2.read_bytes(), "并发下两人撞了同一张图"
+    index = json.loads(assets.bg_index_path(tmp_path).read_text(encoding="utf-8"))
+    assert set(index) == {"111", "222"}
+    assert index["111"]["sha256"] != index["222"]["sha256"]
+
+
+@pytest.mark.asyncio
+async def test_bg_index_records_upstream_identity_and_survives_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """索引落盘：记的是**上游原图** sha256，重新从磁盘读回仍能据此避免撞图。"""
+    lib = _library()
+    monkeypatch.setattr(assets, "_http_get", lib.get)
+    p1 = await assets.ensure_bg(tmp_path, 111, api_key="k", group_id=9001)
+    assert p1 is not None
+    records = assets.read_bg_index(tmp_path)  # 等价于进程重启后重新读盘
+    record = records[111]
+    assert record["sha256"] == hashlib.sha256(lib.images["a"]).hexdigest()
+    assert record["group_id"] == 9001
+    assert record["assigned_at"] > 0
+    p2 = await assets.ensure_bg(tmp_path, 222, api_key="k", group_id=9001)
+    assert p2 is not None
+    assert p2.read_bytes() != p1.read_bytes(), "重启后读回索引失败 → 又撞图了"
+
+
+@pytest.mark.asyncio
+async def test_upstream_total_failure_writes_no_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """上游全军覆没：不写背景图、不写索引（绝不写负缓存）。"""
+
+    async def _boom(*a, **kw):
+        raise RuntimeError("upstream down")
+
+    monkeypatch.setattr(assets, "_http_get", _boom)
+    out = await assets.ensure_bg(tmp_path, 111, api_key="k", group_id=9001)
+    assert out is None
+    assert not assets.bg_path(tmp_path, 111).exists()
+    assert not assets.bg_index_path(tmp_path).exists()
+
+
+@pytest.mark.asyncio
+async def test_corrupt_bg_index_is_tolerated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """索引被写坏（半截 JSON）也不能让签到没图：按空表处理并重写成合法 JSON。"""
+    path = assets.bg_index_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"111": {"sha256": "cut-of', encoding="utf-8")
+    lib = _library()
+    monkeypatch.setattr(assets, "_http_get", lib.get)
+    out = await assets.ensure_bg(tmp_path, 111, api_key="k", group_id=9001)
+    assert out is not None
+    index = json.loads(path.read_text(encoding="utf-8"))
+    assert "111" in index, "坏索引应被重写成合法 JSON"
+
+
+@pytest.mark.asyncio
+async def test_expired_assignment_does_not_block_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """对方那张早该轮换了（过期）→ 不算占用，别人可以复用。"""
+    import os
+    import time
+
+    lib = _library()
+    monkeypatch.setattr(assets, "_http_get", lib.get)
+    p1 = await assets.ensure_bg(tmp_path, 111, api_key="k", group_id=9001)
+    assert p1 is not None
+    first = p1.read_bytes()  # 先留底：过期文件随后会被 prune 掉
+    old = time.time() - 26 * 3600  # 远超 TTL 15min
+    os.utime(p1, (old, old))
+    p2 = await assets.ensure_bg(tmp_path, 222, api_key="k", group_id=9001)
+    assert p2 is not None
+    assert p2.read_bytes() == first, "过期占用不该继续挡人"
+
+
+@pytest.mark.asyncio
+async def test_all_candidates_taken_falls_back_to_a_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """图库只有一张时不能"为了去重让人没背景"：宁可撞图也必须出图。"""
+    lib = _FakeLibrary({"a": _make_jpeg(120, 80)})
+    monkeypatch.setattr(assets, "_http_get", lib.get)
+    p1 = await assets.ensure_bg(tmp_path, 111, api_key="k", group_id=9001)
+    p2 = await assets.ensure_bg(tmp_path, 222, api_key="k", group_id=9001)
+    assert p1 is not None and p2 is not None
+    assert p2.read_bytes() == p1.read_bytes()
+    index = json.loads(assets.bg_index_path(tmp_path).read_text(encoding="utf-8"))
+    assert index["222"]["sha256"] == index["111"]["sha256"]
+
+
+@pytest.mark.asyncio
+async def test_without_group_id_keeps_single_draw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """老调用方（不传 group_id）行为不变：一次只要一张候选。"""
+    lib = _library()
+    monkeypatch.setattr(assets, "_http_get", lib.get)
+    out = await assets.ensure_bg(tmp_path, 111, url="http://x/v1/random", api_key="k")
+    assert out is not None
+    assert any("count=1" in u for u in lib.requests), lib.requests
