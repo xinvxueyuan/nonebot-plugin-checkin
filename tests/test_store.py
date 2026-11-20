@@ -162,3 +162,19 @@ def test_signature_ttl_freshness(tmp_path):
     assert st.signature_is_fresh(1, 2, ttl_minutes=5, now=time.time() + 6 * 60) is False
     assert st.signature_is_fresh(1, 2, ttl_minutes=0) is True
     assert st.signature_is_fresh(9, 9, ttl_minutes=5) is False
+
+
+def test_signature_older_write_does_not_clobber_newer(tmp_path):
+    """并发下先发出去的请求可能后返回：旧签名不得盖掉新签名。"""
+    import time
+
+    from nonebot_plugin_checkin import store as st
+
+    st.init(tmp_path / "c.sqlite")
+    t0 = time.time()
+    st.save_signature(1, 2, "新签名", now=t0 + 10)  # 后发出的那次先返回
+    st.save_signature(1, 2, "旧签名", now=t0)  # 先发出的那次后返回
+    assert st.get_signature(1, 2) == "新签名"
+    # only_if_newer=False 时仍是无条件覆盖（显式刷新场景）
+    st.save_signature(1, 2, "强制覆盖", now=t0, only_if_newer=False)
+    assert st.get_signature(1, 2) == "强制覆盖"
