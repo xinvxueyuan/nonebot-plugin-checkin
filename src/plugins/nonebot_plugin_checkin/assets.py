@@ -36,10 +36,10 @@ _RIFF_MAGIC = b"RIFF"  # WebP 容器头："RIFF" + size + "WEBP"
 _WEBP_QUALITY = 80
 _WEBP_METHOD = 4  # 4 = 速度与压缩率的平衡点
 _WEBP_MAX_EDGE = 800  # 长边上限（卡片宽 ~560px，800 已足够）
-_MIN_BG_BYTES = 2048  # 小于此值视为坏文件
 _SIGNATURE_TIMEOUT_SECONDS = 5.0  # get_stranger_info 的等待上限，防止吊死回执
 _MAX_JSON_BYTES = 64 * 1024  # 随机图 API 的 JSON 响应上限
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 单张背景图上限（20MB，超了就降级为渐变）
+_WEBP_MIN_HEADER = 12  # RIFF(4) + 体积(4) + "WEBP"(4)：少于这个长度不可能是 WebP
 _MAX_PIXELS = (
     40_000_000  # 解码前像素预算（4000万≈120MB RGB）：挡住「小文件大像素」的炸弹
 )
@@ -58,16 +58,33 @@ def bg_path(data_dir: Path, user_id: int) -> Path:
     return data_dir / "backgrounds" / f"{user_id}.webp"
 
 
+def _is_valid_webp(path: Path) -> bool:
+    """按文件头判断是否有效 WebP（不按体积：小图合法时会小于 2KB）。
+
+    空文件 / 半截文件 / 别的格式落进来都要判无效，否则会把坏缓存当命中。
+    """
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(12)
+    except OSError:
+        return False
+    return (
+        len(head) >= _WEBP_MIN_HEADER
+        and head[:4] == _RIFF_MAGIC
+        and head[8:12] == b"WEBP"
+    )
+
+
 def bg_is_fresh(
     data_dir: Path, user_id: int, *, ttl_minutes: int, now: float | None = None
 ) -> bool:
-    """缓存存在且未过期。`ttl_minutes == 0` 表示永不过期。"""
+    """缓存存在、是有效 WebP 且未过期。`ttl_minutes == 0` 表示永不过期。"""
     path = bg_path(data_dir, user_id)
     try:
         stat = path.stat()
     except OSError:
         return False
-    if stat.st_size < _MIN_BG_BYTES:
+    if not _is_valid_webp(path):
         return False
     if ttl_minutes <= 0:
         return True

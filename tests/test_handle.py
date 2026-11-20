@@ -206,7 +206,7 @@ async def test_fallback_text_accepts_design_payload(
     设计系统给 payload 加了 quote / bg / avatar 三个图卡专用键，
     build_fallback_text 必须能容忍它们，否则回退路径会抛 TypeError。
     """
-    from nonebot_plugin_checkin import handle, render, store
+    from nonebot_plugin_checkin import handle, members, render, store
 
     store.save_checkin(
         group_id=G,
@@ -238,6 +238,8 @@ async def test_fallback_text_accepts_design_payload(
         return None
 
     monkeypatch.setattr(render, "render_checkin_card", dead_card)
+    # do_checkin 渲染前会取头像；不桩掉就会真实访问 q1.qlogo.cn
+    monkeypatch.setattr(members, "fetch_avatar", AsyncMock(return_value=None))
     bot = _bot()
     await handle.do_checkin(bot=bot, event=_event())
     assert _has_type(bot, "text")

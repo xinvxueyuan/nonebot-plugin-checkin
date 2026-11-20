@@ -223,6 +223,8 @@ def get_signature(group_id: int, user_id: int) -> str | None:
     row = (
         _conn()
         .execute(
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
+            # 安全：f-string 只拼模块级常量表名 _T_SIGNATURES，用户数据全走 ? 占位符。
             f"SELECT signature FROM {_T_SIGNATURES} WHERE group_id=? AND user_id=?",
             (group_id, user_id),
         )
@@ -240,6 +242,8 @@ def signature_is_fresh(
     row = (
         _conn()
         .execute(
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
+            # 安全：同上，只有常量表名参与拼接。
             f"SELECT fetched_at FROM {_T_SIGNATURES} WHERE group_id=? AND user_id=?",
             (group_id, user_id),
         )

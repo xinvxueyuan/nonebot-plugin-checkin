@@ -43,9 +43,49 @@ def test_bg_is_fresh_false_when_missing_or_empty(tmp_path: Path) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"")
     assert assets.bg_is_fresh(tmp_path, 111, ttl_minutes=15) is False
-    # 过小（<2048）也算坏文件
+    # 半截 / 非 WebP 容器也算坏文件（判据是文件头，不是体积）
     p.write_bytes(b"RIFF" + b"0" * 100)
     assert assets.bg_is_fresh(tmp_path, 111, ttl_minutes=15) is False
+    p.write_bytes(b"GIF89a" + b"0" * 4096)
+    assert assets.bg_is_fresh(tmp_path, 111, ttl_minutes=15) is False
+
+
+def test_bg_is_fresh_accepts_small_but_valid_webp(tmp_path: Path) -> None:
+    """小图（<2KB）也是合法缓存：不能按体积判坏，否则每次都重新下载。"""
+    p = assets.bg_path(tmp_path, 111)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP")
+    assert assets.bg_is_fresh(tmp_path, 111, ttl_minutes=15) is True
+    assert assets.bg_is_fresh(tmp_path, 111, ttl_minutes=0) is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_bg_small_webp_cached_on_second_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """有效小 WebP 落盘后，第二次调用必须命中缓存、完全不联网。"""
+    small = b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"0" * 64  # 76 字节，远小于 2KB
+    calls = 0
+
+    async def _fake_get(*a, **kw):
+        nonlocal calls
+        calls += 1
+        return b'[{"url": "https://x/a.png"}]'
+
+    def _fake_fetch(*a, **kw):
+        return small
+
+    monkeypatch.setattr(assets, "_http_get", _fake_get)
+    monkeypatch.setattr(assets, "to_webp", lambda *a, **kw: small)
+    first = await assets.ensure_bg(tmp_path, 111, url="http://x/v1/random", api_key="k")
+    assert first is not None and first.exists()
+    assert calls > 0, "首次必须真的取图"
+    calls_after_first = calls
+    second = await assets.ensure_bg(
+        tmp_path, 111, url="http://x/v1/random", api_key="k"
+    )
+    assert second == first
+    assert calls == calls_after_first, "第二次必须命中缓存，不得再联网"
 
 
 @pytest.mark.asyncio
@@ -70,9 +110,21 @@ async def test_ensure_bg_returns_none_on_failure(tmp_path: Path, monkeypatch) ->
 
 
 @pytest.mark.asyncio
-async def test_ensure_bg_skips_when_key_empty(tmp_path: Path) -> None:
+async def test_ensure_bg_skips_when_key_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """空 key 必须完全不发请求（`out is None` 挡不住「偷偷发一次」）。"""
+    calls = 0
+
+    async def _counted(*a, **kw):
+        nonlocal calls
+        calls += 1
+        return b"[]"
+
+    monkeypatch.setattr(assets, "_http_get", _counted)
     out = await assets.ensure_bg(tmp_path, 111, url="http://x/v1/random", api_key="")
     assert out is None
+    assert calls == 0, "key 为空不得发起任何请求"
 
 
 @pytest.mark.asyncio
@@ -121,7 +173,7 @@ def test_to_webp_downscales_long_edge() -> None:
     out = assets.to_webp(_make_jpeg(2000, 1200))
     assert out is not None
     with Image.open(io.BytesIO(out)) as im:
-        assert max(im.size) <= 1600, f"长边应 <=1600，实际 {im.size}"
+        assert max(im.size) <= 800, f"长边应 <=800，实际 {im.size}"
 
 
 def test_to_webp_returns_none_on_non_image() -> None:
