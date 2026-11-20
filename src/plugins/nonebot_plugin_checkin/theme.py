@@ -43,7 +43,7 @@ C_VALUE_BORDER = "rgba(0, 0, 0, 0.06)"
 C_VALUE_FG = "#3f3f3f"
 C_QUOTE = "#333333"  # 旧 #8a8a8a 在任何遮罩下对黑底照片都 < 2.0，必须压暗
 C_DIVIDER = "rgba(0, 0, 0, 0.08)"
-BLUR_PX = 40
+BLUR_PX = 10
 SATURATE = "180%"
 
 # 图片 magic：头像的 mime 只能靠字节判断（qlogo 会返回 JPEG，后缀/响应头都不可靠）。
