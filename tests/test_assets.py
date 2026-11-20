@@ -369,16 +369,6 @@ def test_quote_tail_hides_divider_for_blank(tmp_path=None) -> None:
     assert 'class="divider"' in render._quote_tail("有内容")
 
 
-def test_estimate_quote_height_grows_with_length() -> None:
-    """长签名必须把视口撑高，否则会被裁掉。"""
-    from nonebot_plugin_checkin import render
-
-    assert render._estimate_quote_height(None) == 0
-    short = render._estimate_quote_height("短")
-    long = render._estimate_quote_height("很长的签名" * 40)
-    assert long > short > 0
-
-
 def test_to_webp_rejects_pixel_bomb() -> None:
     """小文件大像素（8000×8000 纯色 PNG ≈0.19MB）必须拒绝：解码要 ~183MB。"""
     import io

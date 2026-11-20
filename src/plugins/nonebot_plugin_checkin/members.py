@@ -20,11 +20,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger("nonebot_plugin_checkin")
 
 AVATAR_URL = "https://q1.qlogo.cn/g?b=qq&nk={uid}&s=640"
-_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+# qlogo 的响应格式**不固定**（生产实测既有 JPEG 也有 PNG），所以只认字节不认后缀。
+# 用一张 magic → mime 的常量表驱动：加格式只加一行，不必再改判断逻辑。
+_IMAGE_MIME: dict[bytes, str] = {
+    b"\x89PNG\r\n\x1a\n": "image/png",
+    b"\xff\xd8\xff": "image/jpeg",  # JPEG：SOI(FFD8) + 首个段标记(FF)
+}
+
+
+def image_mime(data: bytes) -> str | None:
+    """按 magic 认图片类型（PNG / JPEG）；认不出返回 None。
+
+    这里是「收不收下这个响应」的判据。theme 侧另有一份小表（`theme._AVATAR_MIME`）
+    只用来选 data URI 的 mime —— 本仓惯例是各模块自留所需 magic（见 assets.py），
+    **加新格式时两处都要加**。
+    """
+    for magic, mime in _IMAGE_MIME.items():
+        if data.startswith(magic):
+            return mime
+    return None
 
 
 def avatar_path(user_id: int) -> Path:
-    """头像缓存文件路径（插件数据目录下的 avatars/）。"""
+    """头像缓存文件路径（插件数据目录下的 avatars/）。
+
+    后缀固定 `.png` 只为「同一用户一个稳定文件名」；**后缀不保证真实格式**，
+    真实格式一律靠 `image_mime()` 嗅字节。仓库内没有任何按后缀判断格式的代码。
+    """
     return store.data_dir() / "avatars" / f"{user_id}.png"
 
 
@@ -56,7 +78,10 @@ def avatar_is_fresh(
 
 
 async def _download(user_id: int) -> bytes | None:
-    """下载头像；异常或非 PNG 都返回 None（不在磁盘上留任何痕迹）。"""
+    """下载头像；异常或**不可识别的图片格式**都返回 None（不在磁盘留任何痕迹）。
+
+    qlogo 返回的格式并不固定（PNG / JPEG 都实测过），所以判据只能是 magic。
+    """
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
             resp = await client.get(AVATAR_URL.format(uid=user_id))
@@ -65,8 +90,11 @@ async def _download(user_id: int) -> bytes | None:
     except Exception as exc:  # 头像拿不到不该让命令失败
         logger.warning(f"拉取头像失败: user_id={user_id}, {exc!r}")
         return None
-    if not data.startswith(_PNG_MAGIC):
-        logger.warning(f"头像不是 PNG，丢弃: user_id={user_id}, {len(data)}B")
+    if image_mime(data) is None:
+        logger.warning(
+            f"头像是不可识别的图片格式，丢弃: user_id={user_id}, {len(data)}B, "
+            f"magic={data[:8].hex()}"
+        )
         return None
     return data
 
