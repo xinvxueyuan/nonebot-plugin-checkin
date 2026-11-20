@@ -38,6 +38,28 @@ nb plugin install nonebot-plugin-checkin
 | `CHECKIN_TIMEZONE` | `Asia/Shanghai` | 判定「今天」的时区 |
 | `CHECKIN_NICKNAME_TTL_MINUTES` | `30` | 昵称缓存时长，**单位分钟**（默认 30；`0` = 永不过期，上限 10080 = 7 天） |
 | `CHECKIN_AVATAR_TTL_MINUTES` | `30` | 头像缓存时长，**单位分钟**（默认 30；`0` = 永不过期，上限 10080 = 7 天） |
+| `CHECKIN_BG_URL` | `http://127.0.0.1:4390/v1/random` | 背景图来源：xbm 随机图 API 的取图端点 |
+| `CHECKIN_BG_API_KEY` | ``（空） | xbm 的 `x-api-key`。**留空则完全跳过取图**，卡片用 CSS 渐变背景 |
+| `CHECKIN_BG_TTL_MINUTES` | `15` | 背景图按人缓存时长，**单位分钟**（`0` = 永不过期） |
+| `CHECKIN_BG_TIMEOUT_SECONDS` | `5` | 取图超时（秒）。超时即降级为渐变背景，不阻塞签到 |
+| `CHECKIN_QUOTE_TTL_MINUTES` | `1440` | 个性签名缓存时长（默认 1 天） |
+| `CHECKIN_QUOTE_MAX_CHARS` | `60` | 引用区最多显示字符数，超出截断加省略号 |
+| `PLAYWRIGHT_BROWSERS_PATH` | （未设） | Playwright 浏览器目录。写在这里会被启动钩子桥接进 `os.environ`；systemd 已设同名 `Environment=` 时以 systemd 为准 |
+
+### 外观（半透光材质）
+
+两张图卡共用一套视觉系统：
+
+- **底层**：从 xbm 取一张随机图作背景，叠一层暖白染色（`rgba(252,248,245,0.42)`）压亮，保证深色文字可读。
+  背景图**按人缓存 15 分钟**，每人独立轮换；落盘前统一转 **WebP**（q=80、长边 ≤800），
+  体积约为原始 JPEG 的 1/3。
+- **卡体**：半透明白 `rgba(255,255,255,0.55)` + `backdrop-filter: blur(40px) saturate(180%)`（磨砂透光），
+  1px 高光描边 + 双层外阴影 + 内侧顶部高光。不支持 `backdrop-filter` 时退回 90% 不透明。
+- **内容**：左侧粗体标签 / 右侧玻璃胶囊值、细横分隔线、底部斜体引用。
+- **引用**：取发起人的真实 QQ 个性签名（`get_stranger_info` 的 `long_nick`），缓存 1 天。
+
+**降级链**（任何一环失败都不影响签到）：取图失败 → CSS 渐变背景；签名拿不到 → 整块引用区省略；
+头像拿不到 → 同尺寸占位圆；渲染异常 → 回退等价纯文本。**失败一律不写负缓存**。
 
 ## 使用 / 命令
 

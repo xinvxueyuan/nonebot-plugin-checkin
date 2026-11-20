@@ -6,7 +6,7 @@ from typing import Any
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
 
-from . import members, render, store
+from . import assets, members, render, store
 from .config import plugin_config
 from .service import evaluate, today_in
 
@@ -60,6 +60,12 @@ async def do_checkin(*, bot: Bot, event: GroupMessageEvent) -> None:
         None,
     )
     nickname = event.sender.card or event.sender.nickname or str(user_id)
+    # 设计系统素材：背景图（按人 15min 轮换）+ 个性签名（1 天缓存）+ 头像。
+    # 任一失败都返回 None，卡片自动降级（渐变背景 / 隐藏引用区 / 占位圆）。
+    data_dir = store.data_dir()
+    bg_file = await assets.ensure_bg(data_dir, user_id)
+    quote = await assets.fetch_signature(bot, group_id, user_id)
+    avatar = await members.fetch_avatar(user_id)
     await _send(
         bot,
         event,
@@ -71,6 +77,9 @@ async def do_checkin(*, bot: Bot, event: GroupMessageEvent) -> None:
             "streak": result.streak,
             "rank": rank,
             "already": result.already,
+            "quote": quote,
+            "bg": bg_file,
+            "avatar": avatar,
         },
     )
 
@@ -99,7 +108,11 @@ async def do_rank(*, bot: Bot, event: GroupMessageEvent) -> None:
             "avatar_png": await members.fetch_avatar(uid),
         })
     title = f"本群签到排行（前 {len(rows)} 名）"
-    png = await render.render_rank_card(rows, title=title)
+    # 排行卡的背景与引用用「发起人」的：把这个协议端调用量压到最低（不遍历全榜取签名）。
+    data_dir = store.data_dir()
+    bg_file = await assets.ensure_bg(data_dir, event.user_id)
+    quote = await assets.fetch_signature(bot, event.group_id, event.user_id)
+    png = await render.render_rank_card(rows, title=title, quote=quote, bg=bg_file)
     message = Message(MessageSegment.at(event.user_id))
     if png is not None:
         message += MessageSegment.image(png)

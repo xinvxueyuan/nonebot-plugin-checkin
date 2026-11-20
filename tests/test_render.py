@@ -67,3 +67,76 @@ def test_fallback_text_contains_key_numbers() -> None:
     assert "+12" in text
     assert "222" in text
     assert "连续 6 天" in text
+
+
+def test_card_html_uses_design_system() -> None:
+    from nonebot_plugin_checkin import render
+
+    html = render._card_html(
+        title="签到成功",
+        nickname="新v学员",
+        points_gained=12,
+        total_points=222,
+        streak=6,
+        rank=3,
+        already=False,
+        quote=None,
+        bg=None,
+    )
+    assert 'class="card"' in html and 'class="arc"' in html
+    assert html.count('class="row"') == 5  # 昵称/今日/总积分/连续/排名
+    assert 'class="divider"' not in html  # 无引用时不出分隔线
+
+
+def test_card_html_has_divider_when_quote_present() -> None:
+    from nonebot_plugin_checkin import render
+
+    html = render._card_html(
+        title="签到成功",
+        nickname="A",
+        points_gained=1,
+        total_points=2,
+        streak=1,
+        rank=None,
+        already=False,
+        quote="人生的最后一课",
+        bg=None,
+    )
+    assert 'class="divider"' in html
+    assert "人生的最后一课" in html
+    assert html.count('class="row"') == 4  # rank 为 None 时少一行
+
+
+def test_card_html_hides_rank_row_when_none() -> None:
+    from nonebot_plugin_checkin import render
+
+    html = render._card_html(
+        title="签到成功",
+        nickname="A",
+        points_gained=1,
+        total_points=2,
+        streak=1,
+        rank=None,
+        already=False,
+        quote=None,
+        bg=None,
+    )
+    assert "本群排名" not in html
+
+
+def test_rank_html_uses_design_system() -> None:
+    from nonebot_plugin_checkin import render
+
+    rows = [
+        {
+            "rank": i,
+            "name": f"用户{i}",
+            "points": 100 - i,
+            "streak": i,
+            "avatar_png": None,
+        }
+        for i in range(1, 4)
+    ]
+    html = render._rank_html(rows, title="本群签到排行")
+    assert 'class="card"' in html and 'class="arc"' in html
+    assert html.count('class="rank-row"') == 3

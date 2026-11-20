@@ -1,6 +1,6 @@
 [project]
 name = "nonebot-plugin-checkin"
-version = "0.1.0"
+version = "0.2.0"
 description = "群签到：每日签到攒积分，连续签到有加成，群内积分排行（htmlrender 出图，失败回退纯文本）"
 keywords = ["nonebot2", "nonebot", "bot", "checkin", "points", "streak"]
 readme = "README.md"
@@ -31,6 +31,8 @@ dependencies = [
     "nonebot-plugin-localstore>=0.7.0",
     # 头像走 q1.qlogo.cn 公开地址，直接 httpx 下载（不经协议端）
     "httpx>=0.27.0",
+    # 背景图转 WebP（Pillow 自带 libwebp，无需系统包）；WebP 比原图小约 3 倍
+    "pillow>=11.0.0",
     # Windows 没有系统 tzdata，zoneinfo 需要它才能解析 Asia/Shanghai
     "tzdata>=2024.1",
 ]

@@ -12,6 +12,7 @@ from .service import CheckinState
 _T_STATS = "checkin_stats"
 _T_LOG = "checkin_log"
 _T_MEMBERS = "checkin_members"
+_T_SIGNATURES = "checkin_signatures"
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {_T_STATS} (
@@ -36,6 +37,13 @@ CREATE TABLE IF NOT EXISTS {_T_MEMBERS} (
     user_id     INTEGER NOT NULL,
     nickname    TEXT    NOT NULL,
     nickname_at REAL    NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS {_T_SIGNATURES} (
+    group_id   INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    signature  TEXT    NOT NULL,
+    fetched_at REAL    NOT NULL,
     PRIMARY KEY (group_id, user_id)
 );
 """
@@ -175,3 +183,75 @@ def count_log(*, group_id: int, user_id: int) -> int:
             (group_id, user_id),
         ).fetchone()
     return int(row["n"]) if row else 0
+
+
+def save_signature(
+    group_id: int,
+    user_id: int,
+    signature: str,
+    *,
+    now: float | None = None,
+    only_if_newer: bool = True,
+) -> None:
+    """写入个性签名（按群+人）。
+
+    `only_if_newer=True` 时，若库里已有**更新**的 `fetched_at` 就不覆盖：
+    并发请求下先发出去的那次可能后返回，无条件覆盖会让旧签名又续命一个 TTL。
+    """
+    ts = time.time() if now is None else now
+    sql_common = (
+        f"INSERT INTO {_T_SIGNATURES} (group_id, user_id, signature, fetched_at) "
+        "VALUES (?,?,?,?) ON CONFLICT (group_id, user_id) DO UPDATE SET "
+        "signature=excluded.signature, fetched_at=excluded.fetched_at"
+    )
+    with _conn() as conn:
+        if only_if_newer:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
+            # 安全：拼接的只有模块级常量表名 _T_SIGNATURES，所有用户数据走 ? 占位符。
+            conn.execute(
+                sql_common + " WHERE excluded.fetched_at >= fetched_at",
+                (group_id, user_id, signature, ts),
+            )
+        else:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
+            conn.execute(sql_common, (group_id, user_id, signature, ts))
+        conn.commit()
+
+
+def get_signature(group_id: int, user_id: int) -> str | None:
+    """读个性签名；没有记录、或缓存的是空签名（占位）都返回 None。"""
+    row = (
+        _conn()
+        .execute(
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
+            # 安全：f-string 只拼模块级常量表名 _T_SIGNATURES，用户数据全走 ? 占位符。
+            f"SELECT signature FROM {_T_SIGNATURES} WHERE group_id=? AND user_id=?",
+            (group_id, user_id),
+        )
+        .fetchone()
+    )
+    if not row:
+        return None
+    return row["signature"] or None  # 空串是「无签名」的占位，对外仍按没有处理
+
+
+def signature_is_fresh(
+    group_id: int, user_id: int, *, ttl_minutes: int, now: float | None = None
+) -> bool:
+    """缓存存在且未过期。`ttl_minutes == 0` 表示永不过期。"""
+    row = (
+        _conn()
+        .execute(
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
+            # 安全：同上，只有常量表名参与拼接。
+            f"SELECT fetched_at FROM {_T_SIGNATURES} WHERE group_id=? AND user_id=?",
+            (group_id, user_id),
+        )
+        .fetchone()
+    )
+    if row is None:
+        return False
+    if ttl_minutes <= 0:
+        return True
+    stamp = time.time() if now is None else now
+    return (stamp - float(row["fetched_at"])) < ttl_minutes * 60

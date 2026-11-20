@@ -25,6 +25,8 @@ SERVICE = PKG / "service.py"
 STORE = PKG / "store.py"
 MEMBERS = PKG / "members.py"
 RENDER = PKG / "render.py"
+ASSETS = PKG / "assets.py"
+THEME = PKG / "theme.py"
 
 # ⚠️ 不要加 `--cov`：本仓没配覆盖率阈值，只跑断言。
 _COMMON = ["-q", "-p", "no:cacheprovider", "-x", "--no-cov"]
@@ -42,6 +44,12 @@ SUBSETS = {
     "M7": ["tests/test_members.py", *_COMMON],
     "M8": ["tests/test_members.py", *_COMMON],
     "M9": ["tests/test_render.py::test_rank_card_renders_png", *_COMMON],
+    "M10": ["tests/test_assets.py", *_COMMON],
+    "M11": ["tests/test_assets.py::test_ensure_bg_returns_none_on_failure", *_COMMON],
+    "M12": ["tests/test_theme.py", *_COMMON],
+    "M13": ["tests/test_assets.py", *_COMMON],
+    "M14": ["tests/test_assets.py", *_COMMON],
+    "M15": ["tests/test_store.py", *_COMMON],
 }
 
 
@@ -168,9 +176,58 @@ MUTATIONS = [
     (
         "M9 排行图卡丢掉昵称（昵称位置印名次）",
         RENDER,
-        '        f\'<span class="nm">{escape(str(row["name"]))}</span>\'\n',
-        '        f\'<span class="nm">{row["rank"]}</span>\'\n',
+        '            f\'<span class="rank-name">{escape(str(r["name"]))}</span>\'\n',
+        '            f\'<span class="rank-name">{r["rank"]}</span>\'\n',
         "排行卡上只剩数字，认不出人",
+    ),
+    (
+        "M10 背景图不做 WebP 转换（直接落原图字节）",
+        ASSETS,
+        "    webp = to_webp(raw)\n",
+        "    webp = raw  # 变异：跳过 WebP 转换\n",
+        "落盘的不是 WebP，体积也不降",
+    ),
+    (
+        "M11 取图失败也写负缓存（留空文件）",
+        ASSETS,
+        "    except Exception as exc:  # 取图失败不该影响签到（含 asyncio 超时）\n"
+        '        logger.warning(f"拉取随机背景图失败: user_id={user_id}, {exc!r}")\n'
+        "        return None\n",
+        "    except Exception as exc:  # 变异：失败也写负缓存\n"
+        '        logger.warning(f"拉取随机背景图失败: user_id={user_id}, {exc!r}")\n'
+        "        _d = bg_path(data_dir, user_id)\n"
+        "        _d.parent.mkdir(parents=True, exist_ok=True)\n"
+        '        _d.write_bytes(b"")\n'
+        "        return None\n",
+        "失败后磁盘留下坏文件，下次被当成缓存命中",
+    ),
+    (
+        "M12 空引用也渲染引用区（不出分隔线判断失效）",
+        THEME,
+        '    if not text or not text.strip():\n        return ""\n',
+        '    if False:  # 变异：空文本照样渲染\n        return ""\n',
+        "空签名时底部多出一块空白引用",
+    ),
+    (
+        "M13 不拦像素炸弹（小文件大像素照样解码）",
+        ASSETS,
+        "            if px > _MAX_PIXELS:\n",
+        "            if False:  # 变异：不拦像素炸弹\n",
+        "8000x8000 纯色 PNG 只 0.19MB，解码要 183MB → OOM",
+    ),
+    (
+        "M14 签名用写入时刻而非请求开始时刻（旧值盖新值）",
+        ASSETS,
+        "        store.save_signature(group_id, user_id, text, now=started_at)\n",
+        "        store.save_signature(group_id, user_id, text)\n",
+        "并发下后返回的旧签名拿到更大时间戳、盖掉新签名",
+    ),
+    (
+        "M15 无脑覆盖旧签名（去掉 only_if_newer 的时间比较）",
+        STORE,
+        '                sql_common + " WHERE excluded.fetched_at >= fetched_at",\n',
+        "                sql_common,\n",
+        "旧签名无条件覆盖新签名并续命一个 TTL",
     ),
 ]
 

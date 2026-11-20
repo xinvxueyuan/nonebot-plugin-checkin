@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新提交会取消旧运行：PR 连续推送时不用等一串过期任务。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # uv 的缓存目录固定在 runner 临时目录里，交给 setup-uv 的 cache 机制接管。
+  UV_PYTHON_DOWNLOADS: automatic
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  lint:
+    name: lint (ruff + pyright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.13
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+      - name: ruff check
+        run: uv run --no-sync ruff check src/ tests/ scripts/
+      - name: ruff format --check
+        run: uv run --no-sync ruff format --check src/ tests/ scripts/
+      - name: pyright
+        run: uv run --no-sync pyright
+
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.13
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+      # 出图测试是真的启动 Chromium：先把浏览器和系统依赖装好（--with-deps 会 apt 装字体、libnss 等）。
+      - name: Install Chromium for htmlrender
+        run: uv run --no-sync playwright install --with-deps chromium
+      # 图卡里全是中文：没有 CJK 字体时文字渲染成豆腐块，虽然不影响 PNG 签名，
+      # 但会让「排版塌了」这类回归悄悄溜过 CI。
+      - name: Install CJK fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+      - name: pytest
+        run: uv run --no-sync pytest -q -p no:cacheprovider
+        env:
+          # 与生产同区域：测试里 today_in() 依赖 zoneinfo + tzdata 解析 Asia/Shanghai。
+          TZ: Asia/Shanghai
+
+  mutation:
+    name: mutation gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.13
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+      - name: Install Chromium for htmlrender
+        run: uv run --no-sync playwright install --with-deps chromium
+      - name: Install CJK fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+      # 变异门禁：把每处修复故意改坏，确认对应测试真的变红。
+      # 注意别加 --cov（本仓没配覆盖率阈值）；TMPDIR 指向 runner 临时目录。
+      - name: mutation check
+        run: uv run --no-sync python scripts/mutation_check.py
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TZ: Asia/Shanghai
