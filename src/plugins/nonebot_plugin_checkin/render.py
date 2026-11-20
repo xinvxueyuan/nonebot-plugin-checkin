@@ -1,10 +1,15 @@
-"""出图：签到结果卡片与排行图卡（htmlrender）；任何异常回退 None，由命令层发纯文本。"""
+"""出图：签到结果卡片与排行图卡（htmlrender）；任何异常回退 None，由命令层发纯文本。
+
+截图高度**不靠估算**：先量根容器 `.page` 的真实 CSS 尺寸，再按该尺寸精确裁切
+（详见 `_screenshot_content`）。`device_scale_factor=2` 因此像素高 = CSS 高 × 2。
+"""
 
 from __future__ import annotations
 
 import base64
 from html import escape
 import logging
+import math
 from typing import Any
 
 from nonebot import require
@@ -14,15 +19,37 @@ from nonebot import require
 # `Cannot detect caller plugin`。
 require("nonebot_plugin_htmlrender")
 
-from nonebot_plugin_htmlrender import html_to_pic
+from nonebot_plugin_htmlrender import get_new_page
 
 from . import theme
 
 logger = logging.getLogger("nonebot_plugin_checkin")
 
-_CARD_WIDTH = 612
-_CARD_VIEWPORT_H = 700  # 签到卡基础高度（不含长引用额外需要的高度）
-_RANK_VIEWPORT_H = 230  # 排行的固定头部高度（不含每行）
+_CARD_WIDTH = 612  # CSS 宽度（像素宽 = 612 × device_scale_factor）
+_DEVICE_SCALE_FACTOR = 2  # 像素高 = CSS 高 × 该值，两者不可混用
+_MEASURE_VIEWPORT_H = 900  # 仅量高用的初始视口；截图按内容裁切，不受它影响
+_SCREENSHOT_TIMEOUT_MS = 30_000  # 与 html_to_pic 的 screenshot_timeout 默认值一致
+
+#: 量根容器真实尺寸（CSS px）。取不到就是结构坏了 → 抛错让上层回退纯文本。
+_MEASURE_JS = """
+() => {
+  const root = document.querySelector('.page');
+  if (!root) throw new Error('缺少根容器 .page');
+  const rect = root.getBoundingClientRect();
+  return { width: rect.width, height: rect.height };
+}
+"""
+
+#: 把根容器撑到「对齐后的裁切高度」：否则多出的半个设备像素落在元素外，
+#: 仍会在 PNG 最后一行留下一条浏览器默认白底。
+#: 只钉高度 —— 钉宽度会改变换行（`box-sizing: border-box` 下 padding 会挤压内容），
+#: 宽度靠 clip 向上取整即可。
+_PIN_HEIGHT_JS = """
+(height) => {
+  const root = document.querySelector('.page');
+  root.style.height = height + 'px';
+}
+"""
 
 
 def _fmt_gained(points_gained: int, already: bool) -> str:
@@ -83,8 +110,10 @@ def _rank_html(
     for r in rows:
         av = r.get("avatar_png")
         if av:
+            # mime 必须按字节嗅：qlogo 会返回 JPEG，写死 image/png 会让 <img> 解码失败。
+            mime = theme.avatar_mime(av) or "image/png"
             img = (
-                f'<img class="rank-avatar" src="data:image/png;base64,'
+                f'<img class="rank-avatar" src="data:{mime};base64,'
                 f'{base64.b64encode(av).decode()}"/>'
             )
         else:
@@ -101,22 +130,44 @@ def _rank_html(
     return theme.card_shell(bg_data_uri=theme.bg_data_uri(bg), body=body)  # type: ignore[arg-type]
 
 
-def _estimate_quote_height(quote: str | None) -> int:
-    """估算引用区占用的像素高度（用于把视口撑够，避免长签名被裁掉）。
+def _ceil_to_device_pixel(css_px: float) -> float:
+    """把 CSS 长度向上取整到整设备像素（dsf=2 时对齐到 0.5 CSS px）。
 
-    卡片内容宽度约 472px、字号 19px、行高 1.65；按每行约 26 个全角字符估算。
+    宁可多 0.5 CSS px 也不裁掉内容；多出来的部分由 `_PIN_HEIGHT_JS` 撑进容器内，
+    不会露出页面背景。
     """
-    if not quote or not quote.strip():
-        return 0
-    text = quote.strip()
-    import unicodedata
+    return math.ceil(css_px * _DEVICE_SCALE_FACTOR) / _DEVICE_SCALE_FACTOR
 
-    # 全角算 2 单位、半角 1 单位；每行约 52 单位
-    units = sum(
-        2 if unicodedata.east_asian_width(ch) in ("W", "F", "A") else 1 for ch in text
-    )
-    lines = max(1, -(-units // 52))  # ceil
-    return int(lines * 19 * 1.65) + 34  # 行高 + 分隔线/内边距
+
+async def _screenshot_content(html: str) -> bytes:
+    """按根容器 `.page` 的真实尺寸精确截出 PNG（像素高 = CSS 高 × dsf）。
+
+    为什么不用 `html_to_pic(full_page=True)`：它的截图高度是
+    `max(视口高度, 内容高度)`，而 0.6.7 的 `html_to_pic` 又没有 viewport 参数
+    （`viewport=` 会经 `**kwargs` 落到 `browser.new_page`，不控制截图高度）。
+    于是「视口高度」只能靠常数 + 估算撑，估大就在底部漏出浏览器默认白底。
+
+    这里改成三步：量 → 对齐 → 裁。
+      ① `getBoundingClientRect()` 量 `.page`（与排版同口径，不含估算）；
+      ② 向上对齐到整设备像素，并把容器**显式**撑到该尺寸
+         （否则半个设备像素落在元素外，PNG 末行仍是白的）；
+      ③ `clip` 到该尺寸截图，`full_page=True` 才能让 clip 突破视口高度。
+    """
+    async with get_new_page(
+        device_scale_factor=_DEVICE_SCALE_FACTOR,
+        viewport={"width": _CARD_WIDTH, "height": _MEASURE_VIEWPORT_H},
+    ) as page:
+        await page.set_content(html, wait_until="networkidle")
+        measured = await page.evaluate(_MEASURE_JS)
+        width = _ceil_to_device_pixel(float(measured["width"]))
+        height = _ceil_to_device_pixel(float(measured["height"]))
+        await page.evaluate(_PIN_HEIGHT_JS, height)
+        return await page.screenshot(
+            clip={"x": 0, "y": 0, "width": width, "height": height},
+            full_page=True,
+            type="png",
+            timeout=_SCREENSHOT_TIMEOUT_MS,
+        )
 
 
 async def render_rank_card(
@@ -126,15 +177,10 @@ async def render_rank_card(
     quote: str | None = None,
     bg: object | None = None,
 ) -> bytes | None:
-    """渲染排行卡片；失败返回 None（调用方回退纯文本）。
-
-    视口高度 = 头部 + 每行 + **引用区实际所需高度**：固定值会让长签名被裁掉。
-    """
+    """渲染排行卡片；失败返回 None（调用方回退纯文本）。"""
     try:
-        height = _RANK_VIEWPORT_H + 57 * len(rows) + _estimate_quote_height(quote)
-        return await html_to_pic(
-            _rank_html(rows, title=title, quote=quote, bg=bg),
-            viewport={"width": 612, "height": height},
+        return await _screenshot_content(
+            _rank_html(rows, title=title, quote=quote, bg=bg)
         )
     except Exception as exc:  # 渲染不可用不该让命令失败
         logger.warning(f"签到排行卡片渲染失败，回退纯文本: {exc!r}")
@@ -156,12 +202,7 @@ def build_rank_fallback_text(
 async def render_checkin_card(**kwargs: Any) -> bytes | None:
     """渲染签到卡片；失败返回 None（调用方回退纯文本）。"""
     try:
-        html = _card_html(**kwargs)
-        quote = kwargs.get("quote")
-        height = _CARD_VIEWPORT_H + _estimate_quote_height(quote)
-        return await html_to_pic(
-            html, viewport={"width": _CARD_WIDTH, "height": height}
-        )
+        return await _screenshot_content(_card_html(**kwargs))
     except Exception as exc:  # 渲染不可用不该让命令失败
         logger.warning(f"签到卡片渲染失败，回退纯文本: {exc!r}")
         return None

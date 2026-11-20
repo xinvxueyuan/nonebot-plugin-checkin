@@ -33,6 +33,15 @@ C_DIVIDER = "rgba(0, 0, 0, 0.07)"
 BLUR_PX = 40
 SATURATE = "180%"
 
+# 图片 magic：头像的 mime 只能靠字节判断（qlogo 会返回 JPEG，后缀/响应头都不可靠）。
+# 与 members._IMAGE_MIME 同源同序（本仓惯例：各模块自留所需 magic，见 assets.py）；
+# 加新格式时两处一起加 —— 这里只决定 data URI 的 mime，不参与「要不要收下」的判断。
+_AVATAR_MIME: dict[bytes, str] = {
+    b"\x89PNG\r\n\x1a\n": "image/png",
+    b"\xff\xd8\xff": "image/jpeg",  # JPEG：SOI(FFD8) + 首个段标记(FF)
+}
+
+
 BASE_CSS = f"""
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 html, body {{ background: transparent; }}
@@ -178,18 +187,42 @@ def card_shell(*, bg_data_uri: str | None, body: str) -> str:
     )
 
 
-def avatar_block(png: bytes | None) -> str:
-    """圆形头像；无头像时渲染同尺寸占位。"""
-    if not png:
+def avatar_mime(data: bytes) -> str | None:
+    """按 magic 认头像的图片类型（PNG / JPEG）；认不出返回 None。
+
+    **为什么在 theme 里自己嗅、而不是让调用方传 mime 进来**：
+    `avatar_block()` 的调用点有签到卡与排行卡两处（render._card_html / _rank_html），
+    让函数自己认字节，调用方一行都不用改，也不会出现「有人传了 bytes 忘了传 mime」
+    的半修状态。代价只是一次 8 字节前缀比较，可忽略。
+    """
+    for magic, mime in _AVATAR_MIME.items():
+        if data.startswith(magic):
+            return mime
+    return None
+
+
+def avatar_block(avatar: bytes | None) -> str:
+    """圆形头像；无头像（或格式认不出）时渲染同尺寸占位。
+
+    mime 由 `avatar_mime()` 现场嗅出，而不是由调用方传进来：`avatar_block()` 有
+    签到卡 / 排行卡两个调用点，让函数自己认字节，调用方一行都不用改，也不会出现
+    「传了 bytes 忘了传 mime」的半修状态。代价只是一次 8 字节前缀比较。
+
+    为什么必须标对：data URI 里的 mime 是解码器的权威依据。Chromium 对图片会做
+    内容嗅探，标错也能画出来（已实测），但严格解码器/其它渲染后端不会 —— 标错就是
+    「有的环境能看、有的环境是空白」，这种不确定性没有必要留着。
+    """
+    if not avatar:
         return (
             '<div class="avatar-wrap">'
             '<span class="avatar placeholder" title="avatar placeholder"></span>'
             "</div>"
         )
-    b64 = base64.b64encode(png).decode()
+    mime = avatar_mime(avatar) or "image/png"
+    b64 = base64.b64encode(avatar).decode()
     return (
         f'<div class="avatar-wrap"><img class="avatar" '
-        f'src="data:image/png;base64,{b64}"/></div>'
+        f'src="data:{mime};base64,{b64}"/></div>'
     )
 
 
