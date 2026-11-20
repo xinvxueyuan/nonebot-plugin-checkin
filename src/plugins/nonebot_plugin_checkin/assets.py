@@ -194,7 +194,7 @@ async def ensure_bg(
             _fetch_random_image(key, plugin_config.checkin_bg_timeout_seconds),
             timeout=plugin_config.checkin_bg_timeout_seconds,
         )
-    except (TimeoutError, Exception) as exc:  # 取图失败不该影响签到
+    except Exception as exc:  # 取图失败不该影响签到（含 asyncio 超时）
         logger.warning(f"拉取随机背景图失败: user_id={user_id}, {exc!r}")
         return None
     if not raw:
