@@ -190,10 +190,10 @@ MUTATIONS = [
     (
         "M11 取图失败也写负缓存（留空文件）",
         ASSETS,
-        "    except (TimeoutError, Exception) as exc:  # 取图失败不该影响签到\n"
+        "    except Exception as exc:  # 取图失败不该影响签到（含 asyncio 超时）\n"
         '        logger.warning(f"拉取随机背景图失败: user_id={user_id}, {exc!r}")\n'
         "        return None\n",
-        "    except (TimeoutError, Exception) as exc:  # 变异：失败也写负缓存\n"
+        "    except Exception as exc:  # 变异：失败也写负缓存\n"
         '        logger.warning(f"拉取随机背景图失败: user_id={user_id}, {exc!r}")\n'
         "        _d = bg_path(data_dir, user_id)\n"
         "        _d.parent.mkdir(parents=True, exist_ok=True)\n"
