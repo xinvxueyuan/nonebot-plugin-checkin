@@ -6,9 +6,12 @@ on:
   pull_request:
   workflow_dispatch:
 
-# 同一分支的新提交会取消旧运行：PR 连续推送时不用等一串过期任务。
+# 同一 PR 的新提交会取消旧运行：连续推送时不用等一串过期任务。
+# group 必须含 `github.sha`（或 run_id）：只写 `github.ref` 时，同一 PR 的第二次
+# push 会与上一条 run 撞进同一 group —— 实测新 run 直接不启动（停在 pending），
+# 看着像 CI 没触发。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
 permissions:
