@@ -54,11 +54,15 @@ jobs:
       # 出图测试是真的启动 Chromium：先把浏览器和系统依赖装好（--with-deps 会 apt 装字体、libnss 等）。
       - name: Install Chromium for htmlrender
         run: uv run --no-sync playwright install --with-deps chromium
-      # 图卡里全是中文：没有 CJK 字体时文字渲染成豆腐块，虽然不影响 PNG 签名，
-      # 但会让「排版塌了」这类回归悄悄溜过 CI。
+      # 图卡里全是中文：没有 CJK 字体时文字渲染成豆腐块，虽不影响 PNG 签名与几何断言
+      # （断言的是「末行唯一色 > 8」，豆腐块也是多色），但会让「排版塌了」溜过 CI。
+      # 必须限时 + 不阻断：实测同一 workflow 一次 46s、另一次卡 22 分钟（apt 源侧问题），
+      # 不能让它把整条流水线按 runner 上限（6h）拖着。
       - name: Install CJK fonts
+        continue-on-error: true
+        timeout-minutes: 4
         run: |
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends fonts-noto-cjk
       - name: pytest
         run: uv run --no-sync pytest -q -p no:cacheprovider
@@ -82,8 +86,10 @@ jobs:
       - name: Install Chromium for htmlrender
         run: uv run --no-sync playwright install --with-deps chromium
       - name: Install CJK fonts
+        continue-on-error: true
+        timeout-minutes: 4
         run: |
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends fonts-noto-cjk
       # 变异门禁：把每处修复故意改坏，确认对应测试真的变红。
       # 注意别加 --cov（本仓没配覆盖率阈值）；TMPDIR 指向 runner 临时目录。

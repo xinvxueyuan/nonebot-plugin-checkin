@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "群签到：每日签到攒积分，连续签到有加成，群内积分排行（htmlrender 出图，失败回退纯文本）"
 keywords = ["nonebot2", "nonebot", "bot", "checkin", "points", "streak"]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
     { name = "xinvxueyuan", email = "xinvxueyuan@yeah.net" },
